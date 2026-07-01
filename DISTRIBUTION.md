@@ -5,7 +5,9 @@ This app is distributed outside the Mac App Store as a downloadable DMG.
 ## Supported targets
 
 - macOS 14 or later.
-- Apple Silicon by default on Apple Silicon hosts. Override `TARGET_TRIPLE` when you need an Intel-only build and the local Xcode toolchain supports that target.
+- Apple Silicon Macs with the `arm64` DMG.
+- Intel Macs with the `x86_64` DMG.
+- `make release` builds the current host architecture by default. Use the explicit architecture targets below when preparing GitHub Release artifacts.
 - A local Codex installation and a signed-in Codex account are required for account quota data.
 
 ## Local unsigned DMG
@@ -30,6 +32,26 @@ with Touch ID or your password. Finder right-click > **Open** also shows the
 manual allow prompt.
 
 To build an Intel-only artifact from a compatible toolchain:
+
+```sh
+make release-intel
+```
+
+This writes `dist/codexU-<version>-mac-x86_64.dmg` and its `.sha256` file.
+
+To build an Apple Silicon artifact explicitly:
+
+```sh
+make release-arm64
+```
+
+To build both Release DMGs in one command:
+
+```sh
+make release-all
+```
+
+You can still override the target triple directly when needed:
 
 ```sh
 make clean release TARGET_TRIPLE="x86_64-apple-macos14.0"

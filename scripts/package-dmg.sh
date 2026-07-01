@@ -19,6 +19,18 @@ DMG_ROOT="$BUILD_DIR/dmg-root"
 VOLUME_NAME="$DISPLAY_NAME"
 TMP_DMG="$DMG_PATH.tmp.dmg"
 
+case "$ARCH_NAME" in
+  arm64)
+    ARCH_LABEL="Apple Silicon Mac (arm64)"
+    ;;
+  x86_64)
+    ARCH_LABEL="Intel Mac (x86_64)"
+    ;;
+  *)
+    ARCH_LABEL="macOS ($ARCH_NAME)"
+    ;;
+esac
+
 rm -rf "$DMG_ROOT"
 mkdir -p "$DMG_ROOT" "$DIST_DIR"
 
@@ -27,6 +39,7 @@ ln -s /Applications "$DMG_ROOT/Applications"
 
 cat > "$DMG_ROOT/README.txt" <<README
 ${DISPLAY_NAME} ${VERSION}
+适用机型: ${ARCH_LABEL}
 
 安装:
 1. 将 ${APP_NAME}.app 拖到 Applications 文件夹。

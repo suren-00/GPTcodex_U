@@ -10,6 +10,8 @@ SOURCES := Sources/CodexUsageWidget/main.swift
 APP_ICON := Resources/codexU.icns
 DEPLOYMENT_TARGET ?= 14.0
 HOST_ARCH := $(shell uname -m)
+APPLE_SILICON_TARGET_TRIPLE ?= arm64-apple-macos$(DEPLOYMENT_TARGET)
+INTEL_TARGET_TRIPLE ?= x86_64-apple-macos$(DEPLOYMENT_TARGET)
 TARGET_TRIPLE ?= $(HOST_ARCH)-apple-macos$(DEPLOYMENT_TARGET)
 ARCH_NAME := $(shell echo "$(TARGET_TRIPLE)" | sed -E 's/-apple-macos.*//')
 DMG_NAME := $(APP_NAME)-$(VERSION)-mac-$(ARCH_NAME).dmg
@@ -24,7 +26,7 @@ else
 CODESIGN_FLAGS := --force --deep --options runtime --timestamp --sign "$(SIGN_IDENTITY)" $(CODESIGN_EXTRA_FLAGS)
 endif
 
-.PHONY: build run probe install dmg checksum release notarize verify clean clean-dist
+.PHONY: build run probe install dmg dmg-arm64 dmg-intel checksum checksum-arm64 checksum-intel release release-arm64 release-intel release-all notarize verify clean clean-dist
 
 build:
 	rm -rf "$(APP_DIR)"
@@ -62,12 +64,34 @@ dmg: build
 	DMG_SIGN_IDENTITY="$(DMG_SIGN_IDENTITY)" \
 	./scripts/package-dmg.sh
 
+dmg-arm64:
+	$(MAKE) dmg TARGET_TRIPLE="$(APPLE_SILICON_TARGET_TRIPLE)"
+
+dmg-intel:
+	$(MAKE) dmg TARGET_TRIPLE="$(INTEL_TARGET_TRIPLE)"
+
 checksum: dmg
 	shasum -a 256 "$(DMG_PATH)" > "$(DMG_PATH).sha256"
 	@cat "$(DMG_PATH).sha256"
 
+checksum-arm64:
+	$(MAKE) checksum TARGET_TRIPLE="$(APPLE_SILICON_TARGET_TRIPLE)"
+
+checksum-intel:
+	$(MAKE) checksum TARGET_TRIPLE="$(INTEL_TARGET_TRIPLE)"
+
 release: clean checksum
 	@echo "Release artifact: $(DMG_PATH)"
+
+release-arm64:
+	$(MAKE) release TARGET_TRIPLE="$(APPLE_SILICON_TARGET_TRIPLE)"
+
+release-intel:
+	$(MAKE) release TARGET_TRIPLE="$(INTEL_TARGET_TRIPLE)"
+
+release-all: clean-dist
+	$(MAKE) release-arm64
+	$(MAKE) release-intel
 
 notarize: dmg
 	APPLE_ID="$(APPLE_ID)" \

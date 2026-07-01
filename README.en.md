@@ -13,17 +13,20 @@ codexU is a macOS desktop widget for tracking OpenAI Codex / ChatGPT Codex quota
 ## Features
 
 - Shows remaining and used Codex quota for the 5-hour and 7-day windows, including reset times.
-- Summarizes token usage for today, the last 7 days, and lifetime totals with a 7-day trend.
+- Summarizes token usage for today, the last 7 days, and lifetime totals with uncached input, cached input, and output splits.
+- Estimates the current month's API-equivalent value from OpenAI API token prices and shows progress against Plus, Pro 100, Pro 200, and the full monthly quota value.
 - Builds a daily task board from local Codex threads and enabled Codex automations.
 - Groups work into active, pending, scheduled, and done columns.
 - Stays on the desktop layer by default, with `Command + U` foreground toggle.
 - Supports Chinese and English UI text. The default language follows the system time zone, and the top `中 | EN` switch can override it.
+- Supports system, light, and dark appearance modes. The default follows macOS, and the top appearance switch can override it.
 - Reads data locally and does not upload usage, threads, or account data to a third-party service.
 
 ## Keyboard Shortcuts
 
 - `Command + U`: toggle the widget between desktop layer and foreground layer.
 - Menu bar gauge icon: same toggle as `Command + U`.
+- Top appearance switch: switch between system, light, and dark modes. System mode follows macOS.
 - Top `中 | EN` switch: switch between Chinese and English. Manual selection is kept for the next launch.
 - Refresh button: immediately refresh quota, token usage, trend, and task board.
 - Close button: quit the widget.
@@ -80,11 +83,21 @@ make probe
 make release
 ```
 
+`make release` builds a DMG for the current build machine architecture. You can also build explicit Mac architectures:
+
+```sh
+make release-arm64
+make release-intel
+make release-all
+```
+
 Release artifacts are written to `dist/`, for example:
 
 ```text
-dist/codexU-0.1.4-mac-arm64.dmg
-dist/codexU-0.1.4-mac-arm64.dmg.sha256
+dist/codexU-0.2.0-mac-arm64.dmg
+dist/codexU-0.2.0-mac-arm64.dmg.sha256
+dist/codexU-0.2.0-mac-x86_64.dmg
+dist/codexU-0.2.0-mac-x86_64.dmg.sha256
 ```
 
 For Developer ID signing and notarization, see [DISTRIBUTION.md](DISTRIBUTION.md).
@@ -92,7 +105,8 @@ For Developer ID signing and notarization, see [DISTRIBUTION.md](DISTRIBUTION.md
 ## Data Sources
 
 - Account and quota: `codex app-server` JSON-RPC methods `account/read`, `account/rateLimits/read`, and `account/usage/read`.
-- Local token usage: `~/.codex/state_5.sqlite`.
+- Local token totals: `~/.codex/state_5.sqlite`.
+- Detailed token splits: `token_count` events in `~/.codex/sessions/**/rollout-*.jsonl` and `~/.codex/archived_sessions/*.jsonl`.
 - Today's board: unarchived and archived Codex threads in the local SQLite database.
 - Scheduled tasks: enabled automation metadata under `~/.codex/automations/**/automation.toml`.
 
@@ -114,7 +128,7 @@ The current local Codex API exposes rolling-window usage percentages and reset t
 
 ### Does codexU support Intel Macs?
 
-The default release is an Apple Silicon / arm64 DMG. Intel Macs can build from source, or you can package from a compatible toolchain with `TARGET_TRIPLE="x86_64-apple-macos14.0"`.
+Yes. Intel Macs should use `codexU-<version>-mac-x86_64.dmg`. From source, package it with `make release-intel`, or override `TARGET_TRIPLE="x86_64-apple-macos14.0"` from a compatible toolchain.
 
 ## License
 

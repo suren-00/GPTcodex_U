@@ -41,6 +41,93 @@ struct DailyTokenBucket: Identifiable, Equatable {
     let tokens: Int64
 }
 
+struct TokenBreakdown: Equatable {
+    var inputTokens: Int64
+    var cachedInputTokens: Int64
+    var outputTokens: Int64
+    var reasoningOutputTokens: Int64
+    var totalTokens: Int64
+
+    static let zero = TokenBreakdown(
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: 0
+    )
+
+    var billableCachedInputTokens: Int64 {
+        min(max(cachedInputTokens, 0), max(inputTokens, 0))
+    }
+
+    var uncachedInputTokens: Int64 {
+        max(0, inputTokens - billableCachedInputTokens)
+    }
+
+    var visibleTotalTokens: Int64 {
+        max(totalTokens, inputTokens + outputTokens)
+    }
+
+    var splitTotalTokens: Int64 {
+        max(uncachedInputTokens + billableCachedInputTokens + max(outputTokens, 0), 0)
+    }
+
+    var isZero: Bool {
+        inputTokens == 0
+            && cachedInputTokens == 0
+            && outputTokens == 0
+            && reasoningOutputTokens == 0
+            && totalTokens == 0
+    }
+
+    var hasNegativeValue: Bool {
+        inputTokens < 0
+            || cachedInputTokens < 0
+            || outputTokens < 0
+            || reasoningOutputTokens < 0
+            || totalTokens < 0
+    }
+
+    mutating func add(_ other: TokenBreakdown) {
+        inputTokens += other.inputTokens
+        cachedInputTokens += other.cachedInputTokens
+        outputTokens += other.outputTokens
+        reasoningOutputTokens += other.reasoningOutputTokens
+        totalTokens += other.totalTokens
+    }
+
+    func delta(from previous: TokenBreakdown) -> TokenBreakdown {
+        TokenBreakdown(
+            inputTokens: inputTokens - previous.inputTokens,
+            cachedInputTokens: cachedInputTokens - previous.cachedInputTokens,
+            outputTokens: outputTokens - previous.outputTokens,
+            reasoningOutputTokens: reasoningOutputTokens - previous.reasoningOutputTokens,
+            totalTokens: totalTokens - previous.totalTokens
+        )
+    }
+}
+
+struct PricedTokenUsage: Equatable {
+    var tokens: TokenBreakdown
+    var estimatedCostUSD: Double
+
+    static let zero = PricedTokenUsage(tokens: .zero, estimatedCostUSD: 0)
+
+    mutating func add(tokens addedTokens: TokenBreakdown, costUSD: Double) {
+        tokens.add(addedTokens)
+        estimatedCostUSD += costUSD
+    }
+}
+
+struct DetailedUsage: Equatable {
+    let today: PricedTokenUsage
+    let sevenDay: PricedTokenUsage
+    let month: PricedTokenUsage
+    let lifetime: PricedTokenUsage
+    let parsedFileCount: Int
+    let tokenEventCount: Int
+}
+
 struct LocalUsage: Equatable {
     let lifetimeTokens: Int64
     let todayTokens: Int64
@@ -49,6 +136,7 @@ struct LocalUsage: Equatable {
     let lastUpdatedAt: Date?
     let dailyBuckets: [DailyTokenBucket]
     let recentThreads: [LocalThread]
+    let detailedUsage: DetailedUsage?
 }
 
 enum TaskColumnKind: String, Equatable {
@@ -137,6 +225,72 @@ struct DiagnosticItem: Identifiable {
     let tint: Color
 }
 
+private struct ModelTokenPrice {
+    let model: String
+    let inputPerMillion: Double
+    let cachedInputPerMillion: Double
+    let outputPerMillion: Double
+}
+
+private struct SessionUsageSource {
+    let rolloutPath: String
+    let model: String?
+}
+
+private struct SessionUsageDelta {
+    let date: Date
+    let tokens: TokenBreakdown
+}
+
+private struct SessionUsageCacheEntry {
+    let fileSize: Int64
+    let modificationDate: Date?
+    let hasTokenEvents: Bool
+    let tokenEventCount: Int
+    let deltas: [SessionUsageDelta]
+}
+
+private struct DetailedUsageAccumulator {
+    var today = PricedTokenUsage.zero
+    var sevenDay = PricedTokenUsage.zero
+    var month = PricedTokenUsage.zero
+    var lifetime = PricedTokenUsage.zero
+    var parsedFileCount = 0
+    var tokenEventCount = 0
+
+    mutating func add(
+        _ tokens: TokenBreakdown,
+        at date: Date,
+        price: ModelTokenPrice,
+        dayStart: Date,
+        sevenDayStart: Date,
+        monthStart: Date
+    ) {
+        let cost = estimatedCostUSD(tokens: tokens, price: price)
+        lifetime.add(tokens: tokens, costUSD: cost)
+        if date >= monthStart {
+            month.add(tokens: tokens, costUSD: cost)
+        }
+        if date >= sevenDayStart {
+            sevenDay.add(tokens: tokens, costUSD: cost)
+        }
+        if date >= dayStart {
+            today.add(tokens: tokens, costUSD: cost)
+        }
+    }
+
+    func makeUsage() -> DetailedUsage {
+        DetailedUsage(
+            today: today,
+            sevenDay: sevenDay,
+            month: month,
+            lifetime: lifetime,
+            parsedFileCount: parsedFileCount,
+            tokenEventCount: tokenEventCount
+        )
+    }
+}
+
 final class UsageStore: ObservableObject {
     @Published var snapshot: UsageSnapshot = .empty
     @Published var isRefreshing = false
@@ -189,6 +343,7 @@ final class UsageStore: ObservableObject {
 
 final class CodexUsageReader {
     private let fileManager = FileManager.default
+    private static var sessionUsageCache: [String: SessionUsageCacheEntry] = [:]
 
     func load() -> UsageSnapshot {
         var messages: [String] = []
@@ -550,6 +705,14 @@ final class CodexUsageReader {
             )
         }
 
+        let detailedUsage = readDetailedUsage(
+            sqlitePath: sqlitePath,
+            dbPath: dbPath,
+            dayStart: dayStart,
+            sevenDayStart: sevenDayStart,
+            messages: &messages
+        )
+
         return LocalUsage(
             lifetimeTokens: int64Value(totalsObject["lifetimeTokens"]) ?? 0,
             todayTokens: int64Value(totalsObject["todayTokens"]) ?? 0,
@@ -557,8 +720,287 @@ final class CodexUsageReader {
             threadCount: intValue(totalsObject["threadCount"]) ?? 0,
             lastUpdatedAt: dateFromEpoch(totalsObject["lastUpdatedAt"]),
             dailyBuckets: dailyBuckets,
-            recentThreads: recent
+            recentThreads: recent,
+            detailedUsage: detailedUsage
         )
+    }
+
+    private func readDetailedUsage(
+        sqlitePath: String,
+        dbPath: String,
+        dayStart: Date,
+        sevenDayStart: Date,
+        messages: inout [String]
+    ) -> DetailedUsage? {
+        let sourceQuery = """
+        SELECT rollout_path AS rolloutPath, model
+        FROM threads
+        WHERE rollout_path IS NOT NULL
+          AND rollout_path <> ''
+          AND tokens_used > 0
+        ORDER BY updated_at ASC;
+        """
+
+        var seenPaths = Set<String>()
+        let sources = runSQLiteJSON(sqlitePath: sqlitePath, dbPath: dbPath, query: sourceQuery).compactMap { object -> SessionUsageSource? in
+            guard let path = object["rolloutPath"] as? String, !path.isEmpty, seenPaths.insert(path).inserted else {
+                return nil
+            }
+            return SessionUsageSource(rolloutPath: path, model: object["model"] as? String)
+        }
+
+        guard !sources.isEmpty else {
+            messages.append("未找到 Codex session 日志")
+            return nil
+        }
+
+        let calendar = Calendar.current
+        var monthComponents = calendar.dateComponents([.year, .month], from: Date())
+        monthComponents.day = 1
+        monthComponents.hour = 0
+        monthComponents.minute = 0
+        monthComponents.second = 0
+        let monthStart = calendar.date(from: monthComponents) ?? dayStart
+
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plainFormatter = ISO8601DateFormatter()
+        plainFormatter.formatOptions = [.withInternetDateTime]
+
+        var accumulator = DetailedUsageAccumulator()
+        for source in sources {
+            guard let entry = cachedSessionUsage(
+                source: source,
+                fractionalFormatter: fractionalFormatter,
+                plainFormatter: plainFormatter
+            ) else { continue }
+
+            if entry.hasTokenEvents {
+                accumulator.parsedFileCount += 1
+                accumulator.tokenEventCount += entry.tokenEventCount
+            }
+
+            let price = modelTokenPrice(for: source.model)
+            for delta in entry.deltas {
+                accumulator.add(
+                    delta.tokens,
+                    at: delta.date,
+                    price: price,
+                    dayStart: dayStart,
+                    sevenDayStart: sevenDayStart,
+                    monthStart: monthStart
+                )
+            }
+        }
+
+        guard accumulator.parsedFileCount > 0, accumulator.tokenEventCount > 0 else {
+            messages.append("未找到 Codex token_count 事件")
+            return nil
+        }
+
+        return accumulator.makeUsage()
+    }
+
+    private func cachedSessionUsage(
+        source: SessionUsageSource,
+        fractionalFormatter: ISO8601DateFormatter,
+        plainFormatter: ISO8601DateFormatter
+    ) -> SessionUsageCacheEntry? {
+        let url = URL(fileURLWithPath: source.rolloutPath)
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              let fileSize = (attributes[.size] as? NSNumber)?.int64Value
+        else { return nil }
+
+        let modificationDate = attributes[.modificationDate] as? Date
+        if let cached = Self.sessionUsageCache[source.rolloutPath],
+           cached.fileSize == fileSize,
+           cached.modificationDate == modificationDate {
+            return cached
+        }
+
+        let tokenCountPattern = #""type":"token_count""#
+        let tokenCountNeedle = Data(tokenCountPattern.utf8)
+        if let parsed = parseSessionUsageWithGrep(
+            url: url,
+            tokenCountPattern: tokenCountPattern,
+            tokenCountNeedle: tokenCountNeedle,
+            fractionalFormatter: fractionalFormatter,
+            plainFormatter: plainFormatter
+        ) {
+            let entry = SessionUsageCacheEntry(
+                fileSize: fileSize,
+                modificationDate: modificationDate,
+                hasTokenEvents: parsed.hasTokenEvents,
+                tokenEventCount: parsed.tokenEventCount,
+                deltas: parsed.deltas
+            )
+            Self.sessionUsageCache[source.rolloutPath] = entry
+            return entry
+        }
+
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        var buffer = Data()
+        var previous = TokenBreakdown.zero
+        var sawTokenEvent = false
+        var tokenEventCount = 0
+        var deltas: [SessionUsageDelta] = []
+
+        while true {
+            let chunk = try? handle.read(upToCount: 64 * 1024)
+            guard let chunk, !chunk.isEmpty else {
+                break
+            }
+            buffer.append(chunk)
+
+            while let newline = buffer.firstIndex(of: 10) {
+                let lineData = buffer.subdata(in: buffer.startIndex..<newline)
+                buffer.removeSubrange(buffer.startIndex...newline)
+                processUsageLine(
+                    lineData,
+                    tokenCountNeedle: tokenCountNeedle,
+                    fractionalFormatter: fractionalFormatter,
+                    plainFormatter: plainFormatter,
+                    previous: &previous,
+                    sawTokenEvent: &sawTokenEvent,
+                    tokenEventCount: &tokenEventCount,
+                    deltas: &deltas
+                )
+            }
+        }
+
+        if !buffer.isEmpty {
+            processUsageLine(
+                buffer,
+                tokenCountNeedle: tokenCountNeedle,
+                fractionalFormatter: fractionalFormatter,
+                plainFormatter: plainFormatter,
+                previous: &previous,
+                sawTokenEvent: &sawTokenEvent,
+                tokenEventCount: &tokenEventCount,
+                deltas: &deltas
+            )
+        }
+
+        let entry = SessionUsageCacheEntry(
+            fileSize: fileSize,
+            modificationDate: modificationDate,
+            hasTokenEvents: sawTokenEvent,
+            tokenEventCount: tokenEventCount,
+            deltas: deltas
+        )
+        Self.sessionUsageCache[source.rolloutPath] = entry
+        return entry
+    }
+
+    private func parseSessionUsageWithGrep(
+        url: URL,
+        tokenCountPattern: String,
+        tokenCountNeedle: Data,
+        fractionalFormatter: ISO8601DateFormatter,
+        plainFormatter: ISO8601DateFormatter
+    ) -> (hasTokenEvents: Bool, tokenEventCount: Int, deltas: [SessionUsageDelta])? {
+        let grepPath = "/usr/bin/grep"
+        guard fileManager.isExecutableFile(atPath: grepPath) else { return nil }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: grepPath)
+        process.arguments = ["-a", "-F", tokenCountPattern, url.path]
+
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 || process.terminationStatus == 1 else {
+            return nil
+        }
+
+        var buffer = data
+        var previous = TokenBreakdown.zero
+        var sawTokenEvent = false
+        var tokenEventCount = 0
+        var deltas: [SessionUsageDelta] = []
+
+        while let newline = buffer.firstIndex(of: 10) {
+            let lineData = buffer.subdata(in: buffer.startIndex..<newline)
+            buffer.removeSubrange(buffer.startIndex...newline)
+            processUsageLine(
+                lineData,
+                tokenCountNeedle: tokenCountNeedle,
+                fractionalFormatter: fractionalFormatter,
+                plainFormatter: plainFormatter,
+                previous: &previous,
+                sawTokenEvent: &sawTokenEvent,
+                tokenEventCount: &tokenEventCount,
+                deltas: &deltas
+            )
+        }
+
+        if !buffer.isEmpty {
+            processUsageLine(
+                buffer,
+                tokenCountNeedle: tokenCountNeedle,
+                fractionalFormatter: fractionalFormatter,
+                plainFormatter: plainFormatter,
+                previous: &previous,
+                sawTokenEvent: &sawTokenEvent,
+                tokenEventCount: &tokenEventCount,
+                deltas: &deltas
+            )
+        }
+
+        return (sawTokenEvent, tokenEventCount, deltas)
+    }
+
+    private func processUsageLine(
+        _ lineData: Data,
+        tokenCountNeedle: Data,
+        fractionalFormatter: ISO8601DateFormatter,
+        plainFormatter: ISO8601DateFormatter,
+        previous: inout TokenBreakdown,
+        sawTokenEvent: inout Bool,
+        tokenEventCount: inout Int,
+        deltas: inout [SessionUsageDelta]
+    ) {
+        guard lineData.range(of: tokenCountNeedle) != nil,
+              let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+              let timestamp = object["timestamp"] as? String,
+              let payload = object["payload"] as? [String: Any],
+              payload["type"] as? String == "token_count",
+              let info = payload["info"] as? [String: Any],
+              let totalUsage = info["total_token_usage"] as? [String: Any],
+              let date = fractionalFormatter.date(from: timestamp) ?? plainFormatter.date(from: timestamp)
+        else { return }
+
+        sawTokenEvent = true
+        tokenEventCount += 1
+
+        let current = TokenBreakdown(
+            inputTokens: int64Value(totalUsage["input_tokens"]) ?? 0,
+            cachedInputTokens: int64Value(totalUsage["cached_input_tokens"]) ?? 0,
+            outputTokens: int64Value(totalUsage["output_tokens"]) ?? 0,
+            reasoningOutputTokens: int64Value(totalUsage["reasoning_output_tokens"]) ?? 0,
+            totalTokens: int64Value(totalUsage["total_tokens"]) ?? 0
+        )
+
+        var delta = current.delta(from: previous)
+        if delta.hasNegativeValue {
+            delta = current
+        }
+        previous = current
+
+        guard !delta.isZero else { return }
+        deltas.append(SessionUsageDelta(date: date, tokens: delta))
     }
 
     private func readTaskBoard(messages: inout [String]) -> TaskBoard? {
@@ -733,6 +1175,47 @@ final class CodexUsageReader {
     }
 }
 
+private func modelTokenPrice(for model: String?) -> ModelTokenPrice {
+    let normalized = (model ?? "").lowercased()
+
+    if normalized.contains("gpt-5.5-pro") {
+        return ModelTokenPrice(model: "gpt-5.5-pro", inputPerMillion: 30, cachedInputPerMillion: 30, outputPerMillion: 180)
+    }
+    if normalized.contains("gpt-5.5") || normalized == "chat-latest" {
+        return ModelTokenPrice(model: "gpt-5.5", inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 30)
+    }
+    if normalized.contains("gpt-5.4-mini") {
+        return ModelTokenPrice(model: "gpt-5.4-mini", inputPerMillion: 0.75, cachedInputPerMillion: 0.075, outputPerMillion: 4.5)
+    }
+    if normalized.contains("gpt-5.4-nano") {
+        return ModelTokenPrice(model: "gpt-5.4-nano", inputPerMillion: 0.2, cachedInputPerMillion: 0.02, outputPerMillion: 1.25)
+    }
+    if normalized.contains("gpt-5.4-pro") {
+        return ModelTokenPrice(model: "gpt-5.4-pro", inputPerMillion: 30, cachedInputPerMillion: 30, outputPerMillion: 180)
+    }
+    if normalized.contains("gpt-5.4") {
+        return ModelTokenPrice(model: "gpt-5.4", inputPerMillion: 2.5, cachedInputPerMillion: 0.25, outputPerMillion: 15)
+    }
+    if normalized.contains("gpt-5.3-codex")
+        || normalized.contains("gpt-5.2-codex")
+        || normalized.contains("gpt-5.3-chat")
+        || normalized.contains("gpt-5.2") {
+        return ModelTokenPrice(model: "gpt-5.2-codex", inputPerMillion: 1.75, cachedInputPerMillion: 0.175, outputPerMillion: 14)
+    }
+    if normalized.contains("gpt-5-codex") || normalized == "gpt-5" {
+        return ModelTokenPrice(model: "gpt-5", inputPerMillion: 1.25, cachedInputPerMillion: 0.125, outputPerMillion: 10)
+    }
+
+    return ModelTokenPrice(model: "gpt-5.5", inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 30)
+}
+
+private func estimatedCostUSD(tokens: TokenBreakdown, price: ModelTokenPrice) -> Double {
+    let uncachedInputCost = Double(tokens.uncachedInputTokens) / 1_000_000 * price.inputPerMillion
+    let cachedInputCost = Double(tokens.billableCachedInputTokens) / 1_000_000 * price.cachedInputPerMillion
+    let outputCost = Double(max(tokens.outputTokens, 0)) / 1_000_000 * price.outputPerMillion
+    return uncachedInputCost + cachedInputCost + outputCost
+}
+
 private func parseSimpleTOML(_ text: String) -> [String: String] {
     var fields: [String: String] = [:]
 
@@ -889,29 +1372,82 @@ enum WidgetLanguage: String, CaseIterable, Equatable {
     }
 }
 
+enum WidgetThemeMode: String, CaseIterable, Equatable {
+    case system
+    case light
+    case dark
+
+    static let storageKey = "codexU.interfaceThemeMode"
+
+    static func storedOrAutomatic(defaults: UserDefaults = .standard) -> WidgetThemeMode {
+        guard let rawValue = defaults.string(forKey: storageKey),
+              let mode = WidgetThemeMode(rawValue: rawValue)
+        else { return .system }
+        return mode
+    }
+
+    var preferredColorScheme: ColorScheme? {
+        switch self {
+        case .system:
+            return nil
+        case .light:
+            return .light
+        case .dark:
+            return .dark
+        }
+    }
+
+    func persist(defaults: UserDefaults = .standard) {
+        defaults.set(rawValue, forKey: Self.storageKey)
+    }
+
+    func applyAppearance() {
+        switch self {
+        case .system:
+            NSApp.appearance = nil
+        case .light:
+            NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark:
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
 struct UsageWidgetView: View {
     @ObservedObject var store: UsageStore
+    @Environment(\.colorScheme) private var colorScheme
     @State private var language = WidgetLanguage.storedOrAutomatic()
+    @State private var themeMode = WidgetThemeMode.storedOrAutomatic()
 
     static let widgetWidth: CGFloat = 820
-    static let widgetDefaultHeight: CGFloat = 620
-    static let widgetMinHeight: CGFloat = 540
-    static let widgetMaxHeight: CGFloat = 820
+    static let widgetDefaultHeight: CGFloat = 720
+    static let widgetMinHeight: CGFloat = 620
+    static let widgetMaxHeight: CGFloat = 920
 
     private var snapshot: UsageSnapshot { store.snapshot }
     private var primary: RateWindow? { snapshot.primary }
+    private var effectiveColorScheme: ColorScheme {
+        themeMode.preferredColorScheme ?? colorScheme
+    }
 
     var body: some View {
-        if #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: 10) {
+        Group {
+            if #available(macOS 26.0, *) {
+                GlassEffectContainer(spacing: 10) {
+                    widgetContent
+                        .glassEffect(
+                            .regular.tint(WidgetPalette.windowTint(effectiveColorScheme)),
+                            in: .rect(cornerRadius: 24, style: .continuous)
+                        )
+                }
+            } else {
                 widgetContent
-                    .glassEffect(
-                        .regular.tint(Color.primary.opacity(0.025)),
-                        in: .rect(cornerRadius: 24, style: .continuous)
-                    )
             }
-        } else {
-            widgetContent
+        }
+        .environment(\.colorScheme, effectiveColorScheme)
+        .preferredColorScheme(themeMode.preferredColorScheme)
+        .onAppear {
+            themeMode.applyAppearance()
         }
     }
 
@@ -951,11 +1487,15 @@ struct UsageWidgetView: View {
                     .foregroundStyle(.primary)
             }
             Spacer()
+            ThemeSwitch(themeMode: themeMode, language: language) { selectedMode in
+                themeMode = selectedMode
+                selectedMode.persist()
+                selectedMode.applyAppearance()
+            }
             LanguageSwitch(language: language) { selectedLanguage in
                 language = selectedLanguage
                 selectedLanguage.persist()
             }
-            accountPill
             planPill
             iconButton(systemName: store.isRefreshing ? "hourglass" : "arrow.clockwise") {
                 store.refresh()
@@ -998,10 +1538,6 @@ struct UsageWidgetView: View {
         statusPill(planLabel)
     }
 
-    private var accountPill: some View {
-        statusPill(accountLabel)
-    }
-
     private func statusPill(_ label: String) -> some View {
         Text(label)
             .font(.system(size: 11, weight: .semibold))
@@ -1010,7 +1546,11 @@ struct UsageWidgetView: View {
             .padding(.vertical, 5)
             .background(
                 Capsule(style: .continuous)
-                    .fill(Color.primary.opacity(0.07))
+                    .fill(WidgetPalette.controlFill(effectiveColorScheme))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(WidgetPalette.controlStroke(effectiveColorScheme), lineWidth: 0.8)
+                    )
             )
     }
 
@@ -1027,120 +1567,53 @@ struct UsageWidgetView: View {
 
     private var usageOverviewSection: some View {
         HStack(alignment: .center, spacing: 26) {
-            GaugeRing(
-                percent: primary?.remainingPercent ?? 0,
-                available: primary != nil,
-                lineWidth: 13
-            )
-            .frame(width: 145, height: 145)
-            .overlay {
-                VStack(spacing: 3) {
-                    Text(primaryText)
-                        .font(.system(size: 38, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                    Text(language.text("剩余额度", "Remaining"))
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
+            VStack(spacing: 8) {
+                DualQuotaRing(
+                    primary: snapshot.primary,
+                    secondary: snapshot.secondary,
+                    language: language
+                )
+                .frame(width: 145, height: 145)
+
+                QuotaResetSummary(
+                    primary: snapshot.primary,
+                    secondary: snapshot.secondary,
+                    language: language
+                )
+                .frame(width: 154)
             }
 
             VStack(alignment: .leading, spacing: 13) {
-                VStack(alignment: .leading, spacing: 11) {
-                    WindowRow(title: language.text("5 小时额度窗口", "5-hour quota window"), window: snapshot.primary, accent: Color(red: 0.08, green: 0.62, blue: 0.48), language: language)
-                    WindowRow(title: language.text("7 天额度窗口", "7-day quota window"), window: snapshot.secondary, accent: Color(red: 0.18, green: 0.44, blue: 0.72), language: language)
+                HStack(spacing: 12) {
+                    DetailedTokenMetricCard(
+                        title: language.text("今日", "Today"),
+                        systemName: "sun.max.fill",
+                        usage: snapshot.local?.detailedUsage?.today,
+                        fallbackTokens: snapshot.local?.todayTokens,
+                        language: language
+                    )
+                    DetailedTokenMetricCard(
+                        title: language.text("近 7 天", "Last 7 days"),
+                        systemName: "calendar",
+                        usage: snapshot.local?.detailedUsage?.sevenDay,
+                        fallbackTokens: snapshot.local?.sevenDayTokens,
+                        language: language
+                    )
+                    DetailedTokenMetricCard(
+                        title: language.text("累计", "Lifetime"),
+                        systemName: "sum",
+                        usage: snapshot.local?.detailedUsage?.lifetime,
+                        fallbackTokens: snapshot.local?.lifetimeTokens,
+                        language: language
+                    )
                 }
 
-                HStack(spacing: 12) {
-                    TokenMetricCard(title: language.text("今日", "Today"), value: formatTokens(snapshot.local?.todayTokens), tint: Color(red: 0.08, green: 0.62, blue: 0.48), language: language)
-                    TokenMetricCard(title: language.text("近 7 天", "Last 7 days"), value: formatTokens(snapshot.local?.sevenDayTokens), tint: Color(red: 0.92, green: 0.58, blue: 0.12), language: language)
-                    TokenMetricCard(title: language.text("累计", "Lifetime"), value: formatTokens(snapshot.local?.lifetimeTokens), tint: Color(red: 0.18, green: 0.44, blue: 0.72), language: language)
-                    MiniTrendCard(buckets: snapshot.local?.dailyBuckets ?? [], language: language)
-                }
+                WoolProgressCard(usage: snapshot.local?.detailedUsage?.month, language: language)
             }
             .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
-        .sectionBackground()
-    }
-
-    private var quotaSection: some View {
-        HStack(spacing: 14) {
-            GaugeRing(
-                percent: primary?.remainingPercent ?? 0,
-                available: primary != nil,
-                lineWidth: 9
-            )
-            .frame(width: 86, height: 86)
-            .overlay {
-                VStack(spacing: 0) {
-                    Text(primaryText)
-                        .font(.system(size: 23, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                    Text(language.text("5h 剩余", "5h left"))
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                SectionTitle(title: language.text("账户额度", "Account quota"), detail: quotaDetail)
-                WindowRow(title: language.text("5 小时", "5 hours"), window: snapshot.primary, accent: Color(red: 0.08, green: 0.62, blue: 0.48), language: language)
-                WindowRow(title: language.text("7 天", "7 days"), window: snapshot.secondary, accent: Color(red: 0.18, green: 0.44, blue: 0.72), language: language)
-            }
-        }
-        .padding(12)
-        .sectionBackground()
-    }
-
-    private var tokenSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionTitle(title: language.text("Token 消耗", "Token usage"), detail: localThreadCountLabel)
-
-            HStack(alignment: .firstTextBaseline, spacing: 14) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(language.text("今日", "Today"))
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Text(formatTokens(snapshot.local?.todayTokens))
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
-                Spacer(minLength: 10)
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text(language.text("累计", "Lifetime"))
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Text(formatTokens(snapshot.local?.lifetimeTokens))
-                        .font(.system(size: 24, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
-            }
-
-            HStack {
-                Text(language.text("近 7 天合计", "Last 7 days total"))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(formatTokens(snapshot.local?.sevenDayTokens))
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-            }
-        }
-        .padding(12)
-        .sectionBackground()
-    }
-
-    private var dailyTokenSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionTitle(title: language.text("每日 Token", "Daily tokens"), detail: language.text("近 7 天", "Last 7 days"))
-            DailyTokenChart(buckets: snapshot.local?.dailyBuckets ?? [], language: language)
-        }
-        .padding(12)
         .sectionBackground()
     }
 
@@ -1160,13 +1633,6 @@ struct UsageWidgetView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 7, height: 7)
-            Text(statusText)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
             Spacer()
             Text("\(language.text("刷新", "Refreshed")) \(timeOnly(snapshot.refreshedAt, language: language))")
                 .font(.system(size: 10, weight: .medium))
@@ -1177,42 +1643,8 @@ struct UsageWidgetView: View {
         }
     }
 
-    private var accountLabel: String {
-        guard let account = snapshot.account else { return language.text("本机统计", "Local stats") }
-        if account.type == "chatgpt" {
-            return account.emailPresent ? language.text("ChatGPT 登录", "ChatGPT signed in") : "ChatGPT"
-        }
-        return account.type
-    }
-
     private var planLabel: String {
         snapshot.account?.planType?.uppercased() ?? "LOCAL"
-    }
-
-    private var primaryText: String {
-        guard let primary else { return "--" }
-        return "\(Int(primary.remainingPercent.rounded()))%"
-    }
-
-    private var creditsLabel: String {
-        guard let credits = snapshot.credits else { return "--" }
-        if credits.unlimited { return "∞" }
-        return credits.balance ?? (credits.hasCredits ? "yes" : "0")
-    }
-
-    private var resetCreditsLabel: String {
-        guard let count = snapshot.credits?.resetCredits else { return "--" }
-        return "\(count)"
-    }
-
-    private var quotaDetail: String {
-        guard let reset = snapshot.primary?.resetsAt else { return language.text("额度状态", "Quota status") }
-        return language.text("5h 重置 \(timeOnly(reset, language: language))", "5h resets \(timeOnly(reset, language: language))")
-    }
-
-    private var localThreadCountLabel: String {
-        guard let count = snapshot.local?.threadCount else { return language.text("本机统计", "Local stats") }
-        return language.text("\(count) 线程", "\(count) threads")
     }
 
     private var taskBoardSummary: String {
@@ -1250,7 +1682,7 @@ struct UsageWidgetView: View {
                     title: language.text("未找到 Codex", "Codex not found"),
                     detail: language.text("请先安装 Codex App，或确认 codex CLI 位于 /Applications/Codex.app、/opt/homebrew/bin 或 /usr/local/bin。", "Install Codex App first, or make sure the codex CLI is in /Applications/Codex.app, /opt/homebrew/bin, or /usr/local/bin."),
                     systemName: "magnifyingglass",
-                    tint: Color(red: 0.86, green: 0.55, blue: 0.18)
+                    tint: WidgetPalette.statusWarning
                 ))
             } else if messages.contains("app-server") {
                 items.append(DiagnosticItem(
@@ -1258,7 +1690,7 @@ struct UsageWidgetView: View {
                     title: language.text("Codex 账户接口暂不可用", "Codex account API unavailable"),
                     detail: language.text("确认 Codex 已登录后点击刷新；本机 token 统计仍可继续显示。", "Make sure Codex is signed in, then refresh. Local token stats can still be shown."),
                     systemName: "exclamationmark.triangle.fill",
-                    tint: Color(red: 0.86, green: 0.55, blue: 0.18)
+                    tint: WidgetPalette.statusWarning
                 ))
             } else {
                 items.append(DiagnosticItem(
@@ -1266,7 +1698,7 @@ struct UsageWidgetView: View {
                     title: language.text("账户额度读取中", "Reading account quota"),
                     detail: language.text("如果长时间无数据，请确认 Codex 已安装并完成登录。", "If data does not appear, make sure Codex is installed and signed in."),
                     systemName: "person.crop.circle.badge.questionmark",
-                    tint: Color(red: 0.18, green: 0.44, blue: 0.72)
+                    tint: WidgetPalette.statusInfo
                 ))
             }
         }
@@ -1278,7 +1710,7 @@ struct UsageWidgetView: View {
                     title: language.text("未找到本机 Codex 统计库", "Local Codex database not found"),
                     detail: language.text("打开 Codex 并至少完成一次会话后，再回到小组件点击刷新。", "Open Codex and complete at least one session, then refresh this widget."),
                     systemName: "externaldrive.badge.questionmark",
-                    tint: Color(red: 0.86, green: 0.55, blue: 0.18)
+                    tint: WidgetPalette.statusWarning
                 ))
             } else if messages.contains("sqlite3") {
                 items.append(DiagnosticItem(
@@ -1286,7 +1718,7 @@ struct UsageWidgetView: View {
                     title: language.text("未找到 sqlite3", "sqlite3 not found"),
                     detail: language.text("请安装 macOS Command Line Tools，或通过 Homebrew 安装 sqlite。", "Install macOS Command Line Tools, or install sqlite with Homebrew."),
                     systemName: "terminal",
-                    tint: Color(red: 0.86, green: 0.55, blue: 0.18)
+                    tint: WidgetPalette.statusWarning
                 ))
             } else {
                 items.append(DiagnosticItem(
@@ -1294,7 +1726,7 @@ struct UsageWidgetView: View {
                     title: language.text("本机统计暂不可用", "Local stats unavailable"),
                     detail: language.text("本机 token 和任务看板依赖 ~/.codex 的本地状态文件。", "Local tokens and the task board depend on Codex state files under ~/.codex."),
                     systemName: "chart.bar.doc.horizontal",
-                    tint: Color(red: 0.18, green: 0.44, blue: 0.72)
+                    tint: WidgetPalette.statusInfo
                 ))
             }
         }
@@ -1306,24 +1738,12 @@ struct UsageWidgetView: View {
                     title: language.text("运行提示", "Runtime note"),
                     detail: localizedReaderMessage(message, language: language),
                     systemName: "info.circle.fill",
-                    tint: Color(red: 0.18, green: 0.44, blue: 0.72)
+                    tint: WidgetPalette.statusInfo
                 )
             }
         }
 
         return items
-    }
-
-    private var statusColor: Color {
-        if primary == nil { return Color(red: 0.86, green: 0.55, blue: 0.18) }
-        if (primary?.remainingPercent ?? 0) < 15 { return Color(red: 0.82, green: 0.22, blue: 0.18) }
-        return Color(red: 0.08, green: 0.62, blue: 0.48)
-    }
-
-    private var statusText: String {
-        if let first = snapshot.messages.first { return localizedReaderMessage(first, language: language) }
-        if snapshot.primary != nil { return "app-server + SQLite" }
-        return "SQLite only"
     }
 }
 
@@ -1362,26 +1782,72 @@ struct LanguageSwitch: View {
     }
 }
 
+struct ThemeSwitch: View {
+    let themeMode: WidgetThemeMode
+    let language: WidgetLanguage
+    let onSelect: (WidgetThemeMode) -> Void
+
+    var body: some View {
+        Picker("", selection: Binding(
+            get: { themeMode },
+            set: { onSelect($0) }
+        )) {
+            Image(systemName: "circle.lefthalf.filled")
+                .tag(WidgetThemeMode.system)
+            Image(systemName: "sun.max.fill")
+                .tag(WidgetThemeMode.light)
+            Image(systemName: "moon.fill")
+                .tag(WidgetThemeMode.dark)
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .controlSize(.mini)
+        .frame(width: 86)
+        .help(language.text("外观：自动、浅色、深色", "Appearance: system, light, dark"))
+        .accessibilityLabel(language.text("外观模式", "Appearance mode"))
+    }
+}
+
 struct SectionBackgroundModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
             content
                 .glassEffect(
-                    .regular.tint(Color.primary.opacity(0.035)),
+                    .regular.tint(WidgetPalette.sectionTint(colorScheme)),
                     in: .rect(cornerRadius: 18, style: .continuous)
                 )
         } else {
             content
                 .background(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color.primary.opacity(0.045))
+                        .fill(WidgetPalette.sectionFill(colorScheme))
                         .overlay(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .strokeBorder(Color.primary.opacity(0.055), lineWidth: 0.8)
+                                .strokeBorder(WidgetPalette.sectionStroke(colorScheme), lineWidth: 0.8)
                         )
                 )
         }
+    }
+}
+
+struct CardBackgroundModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    let cornerRadius: CGFloat
+    let elevated: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(WidgetPalette.cardFill(colorScheme, elevated: elevated))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .strokeBorder(WidgetPalette.cardStroke(colorScheme, elevated: elevated), lineWidth: 0.8)
+                    )
+            )
     }
 }
 
@@ -1390,12 +1856,18 @@ extension View {
         modifier(SectionBackgroundModifier())
     }
 
+    func cardBackground(cornerRadius: CGFloat = 10, elevated: Bool = false) -> some View {
+        modifier(CardBackgroundModifier(cornerRadius: cornerRadius, elevated: elevated))
+    }
+
     func iconButtonStyle() -> some View {
         modifier(IconButtonStyleModifier())
     }
 }
 
 struct IconButtonStyleModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
@@ -1406,7 +1878,11 @@ struct IconButtonStyleModifier: ViewModifier {
                 .buttonStyle(.plain)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.primary.opacity(0.07))
+                        .fill(WidgetPalette.controlFill(colorScheme))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(WidgetPalette.controlStroke(colorScheme), lineWidth: 0.8)
+                        )
                 )
         }
     }
@@ -1420,16 +1896,16 @@ struct GaugeRing: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(Color.white.opacity(0.16), lineWidth: lineWidth)
+                .stroke(WidgetPalette.surfaceTrack, lineWidth: lineWidth)
             Circle()
                 .trim(from: 0, to: available ? CGFloat(max(0, min(1, percent / 100))) : 0.0)
                 .stroke(
                     AngularGradient(
                         colors: [
-                            Color(red: 0.08, green: 0.62, blue: 0.48),
-                            Color(red: 0.67, green: 0.86, blue: 0.42),
-                            Color(red: 0.18, green: 0.44, blue: 0.72),
-                            Color(red: 0.08, green: 0.62, blue: 0.48)
+                            WidgetPalette.brandPrimary,
+                            WidgetPalette.brandPrimaryLight,
+                            WidgetPalette.brandHighlight,
+                            WidgetPalette.brandPrimary
                         ],
                         center: .center
                     ),
@@ -1437,6 +1913,226 @@ struct GaugeRing: View {
                 )
                 .rotationEffect(.degrees(-90))
         }
+    }
+}
+
+struct DualQuotaRing: View {
+    let primary: RateWindow?
+    let secondary: RateWindow?
+    let language: WidgetLanguage
+
+    var body: some View {
+        ZStack {
+            QuotaRingSegment(
+                percent: primary?.remainingPercent ?? 0,
+                available: primary != nil,
+                startColor: quotaPrimaryStartColor,
+                endColor: quotaPrimaryEndColor,
+                trackColor: quotaPrimaryTrackColor,
+                lineWidth: 16
+            )
+            .frame(width: 145, height: 145)
+
+            QuotaRingSegment(
+                percent: secondary?.remainingPercent ?? 0,
+                available: secondary != nil,
+                startColor: quotaSecondaryStartColor,
+                endColor: quotaSecondaryEndColor,
+                trackColor: quotaSecondaryTrackColor,
+                lineWidth: 16
+            )
+            .frame(width: 107, height: 107)
+
+            Circle()
+                .fill(WidgetPalette.surfaceTrack)
+                .frame(width: 72, height: 72)
+
+            VStack(spacing: 4) {
+                QuotaRingLabel(
+                    title: "5h",
+                    value: remainingText(primary),
+                    color: quotaPrimaryColor
+                )
+                QuotaRingLabel(
+                    title: "7d",
+                    value: remainingText(secondary),
+                    color: quotaSecondaryColor
+                )
+                Text(language.text("剩余", "left"))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func remainingText(_ window: RateWindow?) -> String {
+        guard let window else { return "--" }
+        return "\(Int(window.remainingPercent.rounded()))%"
+    }
+}
+
+struct QuotaRingSegment: View {
+    let percent: Double
+    let available: Bool
+    let startColor: RingRGBColor
+    let endColor: RingRGBColor
+    let trackColor: Color
+    let lineWidth: CGFloat
+
+    var body: some View {
+        Canvas { context, size in
+            let diameter = min(size.width, size.height)
+            let progress = available ? CGFloat(max(0, min(1, percent / 100))) : 0
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let radius = max(0, (diameter - lineWidth) / 2)
+            let startDegrees = -90.0
+
+            if progress < 0.999 {
+                let track = arcPath(
+                    center: center,
+                    radius: radius,
+                    from: progress,
+                    to: 1,
+                    startDegrees: startDegrees
+                )
+                context.stroke(
+                    track,
+                    with: .color(trackColor),
+                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt)
+                )
+            }
+
+            if progress > 0.001 {
+                let segmentCount = max(240, Int(ceil(progress * 1_080)))
+                let segmentLength = progress / CGFloat(segmentCount)
+                let overlap = min(segmentLength * 0.65, CGFloat(0.001))
+                for index in 0..<segmentCount {
+                    let rawStart = CGFloat(index) / CGFloat(segmentCount) * progress
+                    let rawEnd = CGFloat(index + 1) / CGFloat(segmentCount) * progress
+                    let t0 = max(0, rawStart - overlap)
+                    let t1 = min(progress, rawEnd + overlap)
+                    let color = startColor.mixed(to: endColor, fraction: Double(index + 1) / Double(segmentCount)).color
+                    let segment = arcPath(
+                        center: center,
+                        radius: radius,
+                        from: t0,
+                        to: t1,
+                        startDegrees: startDegrees
+                    )
+                    context.stroke(
+                        segment,
+                        with: .color(color),
+                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt)
+                    )
+                }
+
+                let startPoint = arcPoint(center: center, radius: radius, progress: 0, startDegrees: startDegrees)
+                let endPoint = arcPoint(center: center, radius: radius, progress: progress, startDegrees: startDegrees)
+                context.fill(
+                    Path(ellipseIn: CGRect(x: startPoint.x - lineWidth / 2, y: startPoint.y - lineWidth / 2, width: lineWidth, height: lineWidth)),
+                    with: .color(startColor.color)
+                )
+                context.fill(
+                    Path(ellipseIn: CGRect(x: endPoint.x - lineWidth / 2, y: endPoint.y - lineWidth / 2, width: lineWidth, height: lineWidth)),
+                    with: .color(endColor.color)
+                )
+            }
+        }
+    }
+
+    private func arcPath(center: CGPoint, radius: CGFloat, from start: CGFloat, to end: CGFloat, startDegrees: Double) -> Path {
+        var path = Path()
+        path.addArc(
+            center: center,
+            radius: radius,
+            startAngle: .degrees(startDegrees + Double(start) * 360),
+            endAngle: .degrees(startDegrees + Double(end) * 360),
+            clockwise: false
+        )
+        return path
+    }
+
+    private func arcPoint(center: CGPoint, radius: CGFloat, progress: CGFloat, startDegrees: Double) -> CGPoint {
+        let radians = (startDegrees + Double(progress) * 360) * .pi / 180
+        return CGPoint(
+            x: center.x + CGFloat(cos(radians)) * radius,
+            y: center.y + CGFloat(sin(radians)) * radius
+        )
+    }
+}
+
+struct QuotaRingLabel: View {
+    let title: String
+    let value: String
+    let color: Color
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(title)
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+            Text(value)
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+        }
+    }
+}
+
+struct QuotaResetSummary: View {
+    let primary: RateWindow?
+    let secondary: RateWindow?
+    let language: WidgetLanguage
+
+    var body: some View {
+        VStack(spacing: 4) {
+            QuotaResetLine(
+                title: "5h",
+                window: primary,
+                color: quotaPrimaryColor,
+                language: language
+            )
+            QuotaResetLine(
+                title: "7d",
+                window: secondary,
+                color: quotaSecondaryColor,
+                language: language
+            )
+        }
+    }
+}
+
+struct QuotaResetLine: View {
+    let title: String
+    let window: RateWindow?
+    let color: Color
+    let language: WidgetLanguage
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 5, height: 5)
+            Text(title)
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+                .monospacedDigit()
+            Text(language.text("重置", "resets"))
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Text(resetText)
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+    }
+
+    private var resetText: String {
+        guard let resetsAt = window?.resetsAt else { return "--" }
+        return resetDateTime(resetsAt, language: language)
     }
 }
 
@@ -1479,10 +2175,10 @@ struct DailyTokenBar: View {
                 .foregroundStyle(.secondary)
             ZStack(alignment: .bottom) {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(Color.white.opacity(0.12))
+                    .fill(WidgetPalette.surfaceTrack)
                     .frame(height: 58)
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(bucket.tokens == 0 ? Color.white.opacity(0.22) : Color(red: 0.08, green: 0.62, blue: 0.48))
+                    .fill(bucket.tokens == 0 ? WidgetPalette.dataZero : WidgetPalette.brandPrimary.opacity(bucket.label == "今天" ? 1 : 0.58))
                     .frame(height: barHeight)
             }
             Text(localizedDayLabel(bucket.label, language: language))
@@ -1494,42 +2190,283 @@ struct DailyTokenBar: View {
     }
 }
 
-struct WindowRow: View {
+struct DetailedTokenMetricCard: View {
     let title: String
-    let window: RateWindow?
-    let accent: Color
+    let systemName: String
+    let usage: PricedTokenUsage?
+    let fallbackTokens: Int64?
     let language: WidgetLanguage
 
+    private var displayTokens: Int64? {
+        usage?.tokens.visibleTotalTokens ?? fallbackTokens
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: systemName)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(WidgetPalette.surfaceTrack)
+                    )
                 Text(title)
                     .font(.system(size: 11, weight: .semibold))
-                Spacer()
-                Text(detail)
-                    .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text(formatUSD(usage?.estimatedCostUSD))
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
             }
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(Color.white.opacity(0.14))
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(accent)
-                        .frame(width: max(4, geometry.size.width * CGFloat((window?.usedPercent ?? 0) / 100)))
+
+            Text(formatTokens(displayTokens))
+                .font(.system(size: 21, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+
+            TokenSplitBar(tokens: usage?.tokens)
+                .frame(height: 8)
+
+            VStack(spacing: 3) {
+                TokenSplitLegendRow(
+                    title: language.text("未缓存", "Input"),
+                    value: usage?.tokens.uncachedInputTokens,
+                    color: uncachedInputColor
+                )
+                TokenSplitLegendRow(
+                    title: language.text("缓存", "Cached"),
+                    value: usage?.tokens.billableCachedInputTokens,
+                    color: cachedInputColor
+                )
+                TokenSplitLegendRow(
+                    title: language.text("输出", "Output"),
+                    value: usage?.tokens.outputTokens,
+                    color: outputTokenColor
+                )
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 128, alignment: .leading)
+        .cardBackground(cornerRadius: 10)
+    }
+}
+
+struct TokenSplitBar: View {
+    let tokens: TokenBreakdown?
+
+    var body: some View {
+        GeometryReader { geometry in
+            let splitTotal = tokens?.splitTotalTokens ?? 0
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(WidgetPalette.surfaceTrack)
+
+                if let tokens, splitTotal > 0 {
+                    HStack(spacing: 0) {
+                        Rectangle()
+                            .fill(uncachedInputColor)
+                            .frame(width: segmentWidth(tokens.uncachedInputTokens, total: splitTotal, available: geometry.size.width))
+                        Rectangle()
+                            .fill(cachedInputColor)
+                            .frame(width: segmentWidth(tokens.billableCachedInputTokens, total: splitTotal, available: geometry.size.width))
+                        Rectangle()
+                            .fill(outputTokenColor)
+                            .frame(width: segmentWidth(tokens.outputTokens, total: splitTotal, available: geometry.size.width))
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 }
             }
-            .frame(height: 6)
         }
     }
 
-    private var detail: String {
-        guard let window else { return "--" }
-        let used = formatUsagePercent(window.usedPercent)
-        if let resetsAt = window.resetsAt {
-            return language.text("已用 \(used) · \(resetDateTime(resetsAt, language: language)) 重置", "Used \(used) · resets \(resetDateTime(resetsAt, language: language))")
+    private func segmentWidth(_ value: Int64, total: Int64, available: CGFloat) -> CGFloat {
+        guard total > 0, value > 0 else { return 0 }
+        return max(2, available * CGFloat(Double(value) / Double(total)))
+    }
+}
+
+struct TokenSplitLegendRow: View {
+    let title: String
+    let value: Int64?
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(title)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text(formatTokens(value))
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
         }
-        return language.text("已用 \(used)", "Used \(used)")
+    }
+}
+
+private struct SubscriptionMilestone: Identifiable {
+    let id: String
+    let title: String
+    let amountUSD: Double
+    let color: Color
+}
+
+private let subscriptionMilestones: [SubscriptionMilestone] = [
+    SubscriptionMilestone(id: "plus", title: "Plus", amountUSD: 20, color: WidgetPalette.statusInfo),
+    SubscriptionMilestone(id: "pro100", title: "Pro100", amountUSD: 100, color: WidgetPalette.brandSecondary),
+    SubscriptionMilestone(id: "pro200", title: "Pro200", amountUSD: 200, color: WidgetPalette.brandPrimaryLight)
+]
+
+// Used only for the full-quota monthly ceiling. Actual usage still uses per-session model prices and token splits.
+private let quotaValueDailyTokenLimit: Double = 200_000_000
+private let quotaValueBillingDays: Double = 30
+private let quotaValueUncachedInputShare = 0.30
+private let quotaValueCachedInputShare = 0.50
+private let quotaValueOutputShare = 0.20
+private let quotaValueReferencePrice = modelTokenPrice(for: "chat-latest")
+private let quotaValueWeightedPricePerMillion =
+    quotaValueUncachedInputShare * quotaValueReferencePrice.inputPerMillion
+    + quotaValueCachedInputShare * quotaValueReferencePrice.cachedInputPerMillion
+    + quotaValueOutputShare * quotaValueReferencePrice.outputPerMillion
+private let quotaValueMonthlyTokenLimit = quotaValueDailyTokenLimit * quotaValueBillingDays
+private let quotaValueMonthlyMaxUSD = quotaValueMonthlyTokenLimit / 1_000_000 * quotaValueWeightedPricePerMillion
+
+struct WoolProgressCard: View {
+    let usage: PricedTokenUsage?
+    let language: WidgetLanguage
+
+    private var cost: Double {
+        usage?.estimatedCostUSD ?? 0
+    }
+
+    private var maxValue: Double {
+        max(quotaValueMonthlyMaxUSD, subscriptionMilestones.map(\.amountUSD).max() ?? 200)
+    }
+
+    private var accent: Color {
+        if cost >= 200 { return WidgetPalette.brandPrimaryLight }
+        if cost >= 100 { return WidgetPalette.brandSecondary }
+        if cost >= 20 { return WidgetPalette.statusInfo }
+        return WidgetPalette.statusWarning
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: cost >= 20 ? "chart.line.uptrend.xyaxis" : "target")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(accent)
+                Text(language.text("羊毛进度", "Value progress"))
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer(minLength: 8)
+                Text(formatUSD(usage?.estimatedCostUSD))
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                Text("/ \(formatCompactUSD(maxValue))")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            QuotaValueProgressBar(
+                currentValue: cost,
+                maxValue: maxValue,
+                accent: accent
+            )
+            .frame(height: 18)
+
+            HStack(spacing: 8) {
+                ForEach(subscriptionMilestones) { milestone in
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(milestone.color)
+                            .frame(width: 5, height: 5)
+                        Text(milestone.title)
+                            .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 4)
+                Text("\(language.text("满额", "Cap")) \(formatCompactUSD(maxValue))")
+                    .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+        }
+        .padding(10)
+        .cardBackground(cornerRadius: 10)
+    }
+}
+
+struct QuotaValueProgressBar: View {
+    let currentValue: Double
+    let maxValue: Double
+    let accent: Color
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let progressWidth = valueOffset(currentValue, width: width)
+
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(WidgetPalette.surfaceTrack)
+                    .frame(height: 10)
+                    .frame(maxHeight: .infinity, alignment: .center)
+
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(accent)
+                    .frame(width: currentValue > 0 ? max(5, progressWidth) : 0, height: 10)
+                    .frame(maxHeight: .infinity, alignment: .center)
+
+                ForEach(subscriptionMilestones) { milestone in
+                    let x = valueOffset(milestone.amountUSD, width: width)
+                    Circle()
+                        .fill(milestone.color)
+                        .frame(width: 7, height: 7)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(Color.white.opacity(0.72), lineWidth: 1)
+                        )
+                        .offset(x: x - 3.5)
+                        .frame(maxHeight: .infinity, alignment: .center)
+                        .help("\(milestone.title) \(formatUSD(milestone.amountUSD))")
+                }
+            }
+        }
+    }
+
+    private func valueOffset(_ amount: Double, width: CGFloat) -> CGFloat {
+        guard maxValue > 0 else { return 0 }
+        let subscriptionCeiling = subscriptionMilestones.map(\.amountUSD).max() ?? 200
+        let subscriptionBand = 0.28
+        let clamped = max(0, min(amount, maxValue))
+
+        let fraction: Double
+        if clamped <= subscriptionCeiling {
+            fraction = subscriptionBand * (clamped / subscriptionCeiling)
+        } else {
+            let remainingValue = max(maxValue - subscriptionCeiling, 1)
+            fraction = subscriptionBand + (1 - subscriptionBand) * ((clamped - subscriptionCeiling) / remainingValue)
+        }
+
+        let raw = width * CGFloat(max(0, min(1, fraction)))
+        return min(max(raw, 0), width)
     }
 }
 
@@ -1561,14 +2498,7 @@ struct TokenMetricCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white.opacity(0.13))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.8)
-                )
-        )
+        .cardBackground(cornerRadius: 10)
     }
 }
 
@@ -1590,7 +2520,7 @@ struct MiniTrendCard: View {
             HStack(alignment: .bottom, spacing: 6) {
                 ForEach(buckets) { bucket in
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(bucket.tokens == 0 ? Color(red: 0.56, green: 0.68, blue: 0.82).opacity(0.35) : Color(red: 0.18, green: 0.48, blue: 0.84).opacity(bucket.label == "今天" ? 1 : 0.55))
+                        .fill(bucket.tokens == 0 ? WidgetPalette.dataZero : WidgetPalette.brandPrimary.opacity(bucket.label == "今天" ? 1 : 0.55))
                         .frame(width: 12, height: miniBarHeight(bucket.tokens))
                 }
             }
@@ -1611,14 +2541,7 @@ struct MiniTrendCard: View {
         .padding(10)
         .frame(width: 132, alignment: .leading)
         .frame(minHeight: 78, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white.opacity(0.13))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.8)
-                )
-        )
+        .cardBackground(cornerRadius: 10)
     }
 
     private func miniBarHeight(_ tokens: Int64) -> CGFloat {
@@ -1729,14 +2652,7 @@ struct TaskIssueCard: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.68))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.8)
-                )
-        )
+        .cardBackground(cornerRadius: 8, elevated: true)
     }
 }
 
@@ -1751,7 +2667,7 @@ struct TaskAvatar: View {
             .frame(width: 18, height: 18)
             .background(
                 Circle()
-                    .fill(Color.primary.opacity(0.08))
+                    .fill(taskAccentColor(kind).opacity(0.13))
             )
     }
 }
@@ -1780,15 +2696,15 @@ struct TaskChip: View {
     private var chipColor: Color {
         switch text.lowercased() {
         case "high", "urgent":
-            return Color(red: 0.9, green: 0.36, blue: 0.06)
+            return WidgetPalette.statusDanger
         case "medium":
-            return Color(red: 0.86, green: 0.55, blue: 0.12)
+            return WidgetPalette.statusWarning
         case "active":
-            return Color(red: 0.05, green: 0.55, blue: 0.32)
+            return WidgetPalette.statusWarning
         case "cron", "wake":
-            return Color(red: 0.37, green: 0.39, blue: 0.74)
+            return WidgetPalette.brandSecondary
         case "done":
-            return Color(red: 0.06, green: 0.43, blue: 0.76)
+            return WidgetPalette.statusSuccess
         default:
             return taskAccentColor(kind)
         }
@@ -1823,7 +2739,7 @@ struct InfoChip: View {
         .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.white.opacity(0.13))
+                .fill(WidgetPalette.surfaceTrack)
         )
     }
 }
@@ -1853,10 +2769,103 @@ struct MetricTile: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.12))
+                .fill(WidgetPalette.surfaceTrack)
         )
     }
 }
+
+struct RingRGBColor: Equatable {
+    let red: Double
+    let green: Double
+    let blue: Double
+
+    var color: Color {
+        Color(red: red, green: green, blue: blue)
+    }
+
+    func mixed(to other: RingRGBColor, fraction: Double) -> RingRGBColor {
+        let clamped = max(0, min(1, fraction))
+        return RingRGBColor(
+            red: red + (other.red - red) * clamped,
+            green: green + (other.green - green) * clamped,
+            blue: blue + (other.blue - blue) * clamped
+        )
+    }
+}
+
+private enum WidgetPalette {
+    static let brandPrimaryRGB = RingRGBColor(red: 0.157, green: 0.400, blue: 0.969) // #2866F7
+    static let brandPrimaryStrongRGB = RingRGBColor(red: 0.122, green: 0.349, blue: 0.929) // #1F59ED
+    static let brandPrimaryLightRGB = RingRGBColor(red: 0.482, green: 0.627, blue: 1.000) // #7BA0FF
+    static let brandSecondaryRGB = RingRGBColor(red: 0.545, green: 0.427, blue: 1.000) // #8B6DFF
+    static let brandHighlightRGB = RingRGBColor(red: 0.855, green: 0.639, blue: 0.980) // #DAA3FA
+
+    static let brandPrimary = brandPrimaryRGB.color
+    static let brandPrimaryStrong = brandPrimaryStrongRGB.color
+    static let brandPrimaryLight = brandPrimaryLightRGB.color
+    static let brandSecondary = brandSecondaryRGB.color
+    static let brandHighlight = brandHighlightRGB.color
+
+    static let statusSuccess = Color(red: 0.188, green: 0.820, blue: 0.345) // #30D158
+    static let statusInfo = Color(red: 0.039, green: 0.518, blue: 1.000) // #0A84FF
+    static let statusWarning = Color(red: 1.000, green: 0.624, blue: 0.039) // #FF9F0A
+    static let statusDanger = Color(red: 1.000, green: 0.271, blue: 0.227) // #FF453A
+    static let statusNeutral = Color(red: 0.596, green: 0.596, blue: 0.616) // #98989D
+    static let dataReasoning = Color(red: 0.749, green: 0.353, blue: 0.949) // #BF5AF2
+
+    static let surfaceTrack = Color.primary.opacity(0.10)
+    static let dataZero = statusNeutral.opacity(0.35)
+
+    static func windowTint(_ colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? Color.white.opacity(0.028) : Color.white.opacity(0.050)
+    }
+
+    static func sectionTint(_ colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? Color.white.opacity(0.040) : Color.white.opacity(0.070)
+    }
+
+    static func sectionFill(_ colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? Color.white.opacity(0.070) : Color.white.opacity(0.460)
+    }
+
+    static func sectionStroke(_ colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? Color.white.opacity(0.080) : Color.black.opacity(0.060)
+    }
+
+    static func cardFill(_ colorScheme: ColorScheme, elevated: Bool = false) -> Color {
+        if colorScheme == .dark {
+            return Color.white.opacity(elevated ? 0.140 : 0.100)
+        }
+        return Color.white.opacity(elevated ? 0.760 : 0.560)
+    }
+
+    static func cardStroke(_ colorScheme: ColorScheme, elevated: Bool = false) -> Color {
+        if colorScheme == .dark {
+            return Color.white.opacity(elevated ? 0.110 : 0.080)
+        }
+        return Color.black.opacity(elevated ? 0.075 : 0.055)
+    }
+
+    static func controlFill(_ colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? Color.white.opacity(0.085) : Color.white.opacity(0.520)
+    }
+
+    static func controlStroke(_ colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? Color.white.opacity(0.070) : Color.black.opacity(0.050)
+    }
+}
+
+private let quotaPrimaryStartColor = WidgetPalette.brandPrimaryLightRGB
+private let quotaPrimaryEndColor = WidgetPalette.brandPrimaryRGB
+private let quotaPrimaryColor = quotaPrimaryEndColor.color
+private let quotaPrimaryTrackColor = WidgetPalette.surfaceTrack
+private let quotaSecondaryStartColor = WidgetPalette.brandHighlightRGB
+private let quotaSecondaryEndColor = WidgetPalette.brandSecondaryRGB
+private let quotaSecondaryColor = quotaSecondaryEndColor.color
+private let quotaSecondaryTrackColor = WidgetPalette.surfaceTrack
+private let uncachedInputColor = WidgetPalette.statusInfo
+private let cachedInputColor = WidgetPalette.brandSecondary
+private let outputTokenColor = WidgetPalette.statusWarning
 
 private func formatTokens(_ value: Int64?) -> String {
     guard let value else { return "--" }
@@ -1870,6 +2879,34 @@ private func formatTokens(_ value: Int64?) -> String {
     return "\(value)"
 }
 
+private func formatUSD(_ value: Double?) -> String {
+    guard let value else { return "--" }
+    let absValue = abs(value)
+    if absValue >= 1_000 {
+        return String(format: "$%.0f", value)
+    }
+    return String(format: "$%.2f", value)
+}
+
+private func formatCompactUSD(_ value: Double?) -> String {
+    guard let value else { return "--" }
+    let absValue = abs(value)
+    if absValue >= 1_000_000 {
+        return String(format: "$%.1fM", value / 1_000_000)
+    }
+    if absValue >= 10_000 {
+        return String(format: "$%.1fK", value / 1_000)
+    }
+    if absValue >= 1_000 {
+        return String(format: "$%.0f", value)
+    }
+    return String(format: "$%.0f", value)
+}
+
+private func formatUSDPerMillion(_ value: Double) -> String {
+    String(format: "$%.2f/M", value)
+}
+
 private func formatUsagePercent(_ value: Double) -> String {
     if value > 0, value < 1 {
         return "<1%"
@@ -1880,13 +2917,13 @@ private func formatUsagePercent(_ value: Double) -> String {
 private func taskAccentColor(_ kind: TaskColumnKind) -> Color {
     switch kind {
     case .active:
-        return Color(red: 0.88, green: 0.50, blue: 0.05)
+        return WidgetPalette.statusWarning
     case .pending:
-        return Color(red: 0.40, green: 0.43, blue: 0.48)
+        return WidgetPalette.statusNeutral
     case .scheduled:
-        return Color(red: 0.07, green: 0.55, blue: 0.31)
+        return WidgetPalette.brandSecondary
     case .done:
-        return Color(red: 0.07, green: 0.43, blue: 0.78)
+        return WidgetPalette.statusSuccess
     }
 }
 
@@ -1944,6 +2981,8 @@ private func localizedReaderMessage(_ message: String, language: WidgetLanguage)
     if message.contains("未找到 Codex state_5.sqlite") { return "Codex state_5.sqlite not found" }
     if message.contains("未找到 sqlite3") { return "sqlite3 not found" }
     if message.contains("SQLite 查询失败") { return "SQLite query failed" }
+    if message.contains("未找到 Codex session 日志") { return "Codex session logs not found" }
+    if message.contains("未找到 Codex token_count 事件") { return "Codex token_count events not found" }
     if message.contains("任务看板未找到 SQLite 数据源") { return "Task board SQLite data source not found" }
     if message.contains("app-server") { return message.replacingOccurrences(of: "未知错误", with: "Unknown error") }
     return message
@@ -1984,6 +3023,20 @@ private func isoString(_ date: Date?) -> String? {
 
 private func jsonValue<T>(_ value: T?) -> Any {
     value.map { $0 as Any } ?? NSNull()
+}
+
+private func jsonObject(_ usage: PricedTokenUsage) -> [String: Any] {
+    [
+        "estimatedCostUSD": usage.estimatedCostUSD,
+        "tokens": [
+            "inputTokens": usage.tokens.inputTokens,
+            "cachedInputTokens": usage.tokens.billableCachedInputTokens,
+            "uncachedInputTokens": usage.tokens.uncachedInputTokens,
+            "outputTokens": usage.tokens.outputTokens,
+            "reasoningOutputTokens": usage.tokens.reasoningOutputTokens,
+            "totalTokens": usage.tokens.visibleTotalTokens
+        ] as [String: Any]
+    ]
 }
 
 private func dumpJSON(_ snapshot: UsageSnapshot) {
@@ -2028,7 +3081,7 @@ private func dumpJSON(_ snapshot: UsageSnapshot) {
     }
 
     if let local = snapshot.local {
-        object["local"] = [
+        var localObject: [String: Any] = [
             "todayTokens": local.todayTokens,
             "sevenDayTokens": local.sevenDayTokens,
             "lifetimeTokens": local.lifetimeTokens,
@@ -2041,7 +3094,20 @@ private func dumpJSON(_ snapshot: UsageSnapshot) {
                     "tokens": bucket.tokens
                 ] as [String: Any]
             }
-        ] as [String: Any]
+        ]
+
+        if let detailed = local.detailedUsage {
+            localObject["detailedUsage"] = [
+                "today": jsonObject(detailed.today),
+                "sevenDay": jsonObject(detailed.sevenDay),
+                "month": jsonObject(detailed.month),
+                "lifetime": jsonObject(detailed.lifetime),
+                "parsedFileCount": detailed.parsedFileCount,
+                "tokenEventCount": detailed.tokenEventCount
+            ] as [String: Any]
+        }
+
+        object["local"] = localObject
     }
 
     if let taskBoard = snapshot.taskBoard {
@@ -2199,6 +3265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        WidgetThemeMode.storedOrAutomatic().applyAppearance()
         debugLog("app launched bundle=\(Bundle.main.bundlePath)")
 
         let width = UsageWidgetView.widgetWidth

@@ -61,11 +61,35 @@ Codex keeps local thread inventory in `~/.codex/state_5.sqlite`. The `threads` t
 
 This is useful for local activity tracking, but it is not the authoritative remaining account quota. A thread can be updated later, so daily grouping is an approximation based on last update time.
 
+## Detailed local token usage
+
+Codex session JSONL files under `~/.codex/sessions/**/rollout-*.jsonl` and `~/.codex/archived_sessions/*.jsonl` include `event_msg` records with `payload.type = token_count`. Those records expose:
+
+- `input_tokens`
+- `cached_input_tokens`
+- `output_tokens`
+- `reasoning_output_tokens`
+- `total_tokens`
+
+The widget treats `cached_input_tokens` as a subset of input tokens. Cost estimation therefore uses:
+
+```text
+uncached_input = input_tokens - cached_input_tokens
+estimated_cost =
+  uncached_input / 1M * input_price
++ cached_input_tokens / 1M * cached_input_price
++ output_tokens / 1M * output_price
+```
+
+`reasoning_output_tokens` is shown only as a sub-detail of output and is not added again for cost.
+
+The JSONL stream can contain repeated cumulative token snapshots, so the parser computes deltas from consecutive `total_token_usage` snapshots per session instead of summing every record directly. For daily and monthly buckets, each positive delta is assigned to the timestamp of its `token_count` event. This is more precise than grouping a whole thread by `threads.updated_at`, but it is still a local estimate rather than an official invoice.
+
 ## What this widget intentionally avoids
 
 - It does not read `~/.codex/auth.json` token values.
 - It does not call private ChatGPT web endpoints directly.
-- It does not parse full Codex logs. Logs can include `response.completed` token counts, but they are noisy and may contain sensitive prompt/tool data.
+- It does not parse prompt or tool payloads from session logs; it filters only `token_count` event lines.
 
 ## Current implementation choice
 
@@ -73,5 +97,6 @@ The widget displays both kinds of data separately:
 
 - Account limit remaining: from `account/rateLimits/read`
 - Local token usage: from `threads.tokens_used`
+- Detailed token split and API-equivalent value: from local JSONL `token_count` events, with SQLite as the source of session paths and model names.
 
 If app-server is unavailable, the widget falls back to SQLite-only mode and marks account-limit data as unavailable.

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0 - 2026-07-01
+
+- Introduced the new Apple-inspired visual system with refined light and dark palettes, elevated surfaces, consistent control styling, and updated token colors.
+- Added system, light, and dark appearance modes with a persistent top-level mode switch.
+- Added detailed token parsing from local Codex `token_count` session events, including uncached input, cached input, output, and monthly API-equivalent value estimates.
+- Redesigned the value progress card around Plus, Pro100, Pro200, and full monthly quota milestones.
+- Simplified the quota area by moving reset times under the dual ring and removing redundant 5-hour and 7-day progress rows.
+- Increased the widget height so task board rows have more room to render cleanly.
+- Added explicit Intel Mac and Apple Silicon DMG packaging targets and documented x86_64 release artifacts.
+
 ## 0.1.4
 
 - Added Chinese and English UI text support.
