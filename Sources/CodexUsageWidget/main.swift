@@ -3225,25 +3225,22 @@ struct SettingsPanelView: View {
                     title: "Runtime",
                     detail: language.text("展示范围", "Display")
                 ) {
-                    SettingsToggleRow(
-                        title: "Codex",
-                        detail: language.text("在主窗口和菜单栏浮窗中展示 Codex", "Show Codex in the main window and menu popover")
+                    SettingsPickerRow(
+                        title: language.text("展示 Runtime", "Visible runtimes"),
+                        detail: language.text("主窗口和菜单栏浮窗中的 Runtime 范围", "Runtime scope in the main window and menu popover")
                     ) {
-                        SettingsSwitchToggle(
-                            isOn: runtimeVisibilityBinding(.codex),
-                            isDisabled: isOnlyVisibleRuntime(.codex),
-                            help: runtimeVisibilityHelp(.codex)
-                        )
-                    }
-
-                    SettingsToggleRow(
-                        title: "Claude Code",
-                        detail: language.text("在主窗口和菜单栏浮窗中展示 Claude Code", "Show Claude Code in the main window and menu popover")
-                    ) {
-                        SettingsSwitchToggle(
-                            isOn: runtimeVisibilityBinding(.claudeCode),
-                            isDisabled: isOnlyVisibleRuntime(.claudeCode),
-                            help: runtimeVisibilityHelp(.claudeCode)
+                        SettingsRuntimeMultiSelectControl(
+                            selectedScopes: settings.visibleRuntimeScopes,
+                            language: language
+                        ) { scope in
+                            settings.setRuntime(scope, visible: !settings.isRuntimeVisible(scope))
+                        }
+                        .help(runtimeSelectionHelp)
+                        .accessibilityLabel(language.text("展示 Runtime", "Visible runtimes"))
+                        .accessibilityValue(
+                            settings.visibleRuntimeScopes
+                                .map(\.displayName)
+                                .joined(separator: ", ")
                         )
                     }
                 }
@@ -3337,22 +3334,11 @@ struct SettingsPanelView: View {
         store.snapshot.account?.planType?.uppercased() ?? "LOCAL"
     }
 
-    private func runtimeVisibilityBinding(_ scope: RuntimeScope) -> Binding<Bool> {
-        Binding(
-            get: { settings.isRuntimeVisible(scope) },
-            set: { settings.setRuntime(scope, visible: $0) }
+    private var runtimeSelectionHelp: String {
+        language.text(
+            "点击切换展示范围；至少需要保留一个 Runtime",
+            "Click to change visibility; at least one runtime must stay visible"
         )
-    }
-
-    private func isOnlyVisibleRuntime(_ scope: RuntimeScope) -> Bool {
-        settings.isRuntimeVisible(scope) && settings.visibleRuntimeScopes.count == 1
-    }
-
-    private func runtimeVisibilityHelp(_ scope: RuntimeScope) -> String {
-        if isOnlyVisibleRuntime(scope) {
-            return language.text("至少需要保留一个 Runtime", "At least one runtime must stay visible")
-        }
-        return language.text("控制 \(scope.displayName) 是否出现在 Runtime 切换和菜单栏浮窗中", "Controls whether \(scope.displayName) appears in runtime switching and the menu popover")
     }
 }
 
@@ -3427,6 +3413,72 @@ struct SettingsSegmentedControl<Value: Hashable>: View {
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous))
+    }
+}
+
+struct SettingsRuntimeMultiSelectControl: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let selectedScopes: [RuntimeScope]
+    let language: WidgetLanguage
+    let onToggle: (RuntimeScope) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(RuntimeScope.allCases.enumerated()), id: \.element.id) { index, scope in
+                Button {
+                    onToggle(scope)
+                } label: {
+                    HStack(spacing: 6) {
+                        RuntimeLogoView(scope: scope, size: 16)
+                        Text(label(for: scope))
+                            .font(.system(size: 12, weight: isSelected(scope) ? .semibold : .medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                    }
+                    .foregroundStyle(isSelected(scope) ? Color.white : Color.secondary)
+                    .frame(maxWidth: .infinity, minHeight: settingsSegmentHeight)
+                    .background(
+                        RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous)
+                            .fill(isSelected(scope) ? WidgetPalette.brandPrimary : Color.clear)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(label(for: scope))
+                .accessibilityValue(isSelected(scope) ? language.text("已选择", "Selected") : language.text("未选择", "Not selected"))
+
+                if index < RuntimeScope.allCases.count - 1 {
+                    Rectangle()
+                        .fill(WidgetPalette.controlStroke(colorScheme))
+                        .frame(width: 1, height: 16)
+                        .padding(.horizontal, 1)
+                }
+            }
+        }
+        .padding(3)
+        .frame(width: settingsAccessoryColumnWidth, height: settingsSegmentHeight + 6)
+        .background(
+            RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous)
+                .fill(WidgetPalette.controlFill(colorScheme))
+                .overlay(
+                    RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous)
+                        .strokeBorder(WidgetPalette.controlStroke(colorScheme), lineWidth: 0.8)
+                )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: settingsControlCornerRadius, style: .continuous))
+    }
+
+    private func isSelected(_ scope: RuntimeScope) -> Bool {
+        selectedScopes.contains(scope)
+    }
+
+    private func label(for scope: RuntimeScope) -> String {
+        switch scope {
+        case .codex:
+            return "Codex"
+        case .claudeCode:
+            return language.text("Claude Code", "Claude Code")
+        }
     }
 }
 
