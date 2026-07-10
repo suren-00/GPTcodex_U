@@ -2543,6 +2543,8 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    @Published private(set) var statusItemPreferences: StatusItemPreferences
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         language = WidgetLanguage.storedOrAutomatic(defaults: defaults)
@@ -2560,6 +2562,7 @@ final class AppSettings: ObservableObject {
         }
         skippedUpdateVersion = defaults.string(forKey: Self.skippedUpdateVersionKey)
         visibleRuntimeScopes = Self.storedVisibleRuntimeScopes(defaults: defaults)
+        statusItemPreferences = StatusItemPreferencesStore.load(defaults: defaults)
     }
 
     func isRuntimeVisible(_ scope: RuntimeScope) -> Bool {
@@ -2590,6 +2593,29 @@ final class AppSettings: ObservableObject {
 
     private static func orderedRuntimeScopes(_ scopes: Set<RuntimeScope>) -> [RuntimeScope] {
         RuntimeScope.allCases.filter { scopes.contains($0) }
+    }
+
+    @discardableResult
+    func updateStatusItemPreferences(
+        _ mutation: (inout StatusItemPreferences) -> Void
+    ) -> Result<Void, StatusItemPreferenceError> {
+        var candidate = statusItemPreferences
+        mutation(&candidate)
+        if let error = candidate.validationError() {
+            return .failure(error)
+        }
+        candidate = candidate.normalized()
+        guard candidate != statusItemPreferences else {
+            return .success(())
+        }
+        statusItemPreferences = candidate
+        StatusItemPreferencesStore.save(candidate, defaults: defaults)
+        return .success(())
+    }
+
+    func resetStatusItemPreferences() {
+        StatusItemPreferencesStore.reset(defaults: defaults)
+        statusItemPreferences = .default
     }
 
     func skipUpdateVersion(_ version: String) {
