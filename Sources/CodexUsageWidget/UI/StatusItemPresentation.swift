@@ -67,6 +67,7 @@ struct StatusItemMetricPresentation: Equatable, Identifiable {
 struct StatusItemPresentation: Equatable {
     let mode: StatusItemDisplayMode
     let quotaMode: QuotaDisplayMode
+    let showsResetCountdown: Bool
     let runtime: RuntimeScope
     let imageSize: NSSize
     let itemLength: CGFloat
@@ -152,6 +153,7 @@ struct StatusItemPresentationBuilder {
         return StatusItemPresentation(
             mode: preferences.displayMode,
             quotaMode: preferences.quotaMode,
+            showsResetCountdown: preferences.showsResetCountdown,
             runtime: source.runtime,
             imageSize: NSSize(width: imageWidth, height: StatusItemLayoutMetrics.imageHeight),
             itemLength: imageWidth + StatusItemLayoutMetrics.itemOuterPadding,
