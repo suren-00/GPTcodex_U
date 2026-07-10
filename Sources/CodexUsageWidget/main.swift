@@ -503,6 +503,11 @@ private struct LocalAnalyticsCacheEntry: Codable {
 }
 
 final class UsageStore: ObservableObject {
+    private struct StatisticsSnapshotCacheEntry {
+        let snapshot: MultiRuntimeUsageSnapshot
+        let cachedAt: Date
+    }
+
     @Published var snapshot: UsageSnapshot = .empty
     @Published var multiRuntimeSnapshot: MultiRuntimeUsageSnapshot = .empty
     @Published var runtimeSnapshots: [RuntimeUsageSnapshot] = []
@@ -510,6 +515,8 @@ final class UsageStore: ObservableObject {
     @Published var visibleRuntimeScopes: [RuntimeScope] = RuntimeScope.allCases
     @Published var isRefreshing = false
     @Published private(set) var statisticsPreference = StatisticsTimeZonePreferenceStore.load()
+    @Published private(set) var statisticsTransitionMessage: String?
+    @Published private(set) var isSwitchingStatisticsTimeZone = false
 
     private var fullTimer: Timer?
     private var taskBoardTimer: Timer?
@@ -518,6 +525,11 @@ final class UsageStore: ObservableObject {
     private var isRefreshingTaskBoard = false
     private var refreshGeneration: UInt64 = 0
     private var hasPendingRefresh = false
+    private var statisticsSnapshotCache: [String: StatisticsSnapshotCacheEntry] = [:]
+    private var statisticsSnapshotCacheOrder: [String] = []
+    private var statisticsFeedbackTimer: Timer?
+    private let statisticsSnapshotCacheLimit = 4
+    private let statisticsSnapshotCacheTTL: TimeInterval = 3 * 60
 
     var runtimeSummaries: [RuntimeMenuSummary] {
         RuntimeScope.allCases.compactMap { scope in
@@ -559,6 +571,7 @@ final class UsageStore: ObservableObject {
         fullTimer?.invalidate()
         taskBoardTimer?.invalidate()
         statisticsRolloverTimer?.invalidate()
+        statisticsFeedbackTimer?.invalidate()
         if let systemTimeZoneObserver {
             NotificationCenter.default.removeObserver(systemTimeZoneObserver)
             self.systemTimeZoneObserver = nil
@@ -584,6 +597,10 @@ final class UsageStore: ObservableObject {
                 if generation == self.refreshGeneration,
                    multiSnapshot.statisticsIdentity.preference == self.statisticsPreference {
                     self.apply(multiSnapshot)
+                    self.cacheStatisticsSnapshot(multiSnapshot)
+                    if self.isSwitchingStatisticsTimeZone {
+                        self.finishStatisticsTimeZoneSwitch()
+                    }
                 }
                 self.isRefreshing = false
                 if self.hasPendingRefresh {
@@ -597,10 +614,75 @@ final class UsageStore: ObservableObject {
     func updateStatisticsTimeZone(_ preference: StatisticsTimeZonePreference) {
         let repaired = preference.repaired()
         guard repaired != statisticsPreference else { return }
+        refreshGeneration &+= 1
         statisticsPreference = repaired
         StatisticsTimeZonePreferenceStore.save(repaired)
         scheduleStatisticsRollover()
+        isSwitchingStatisticsTimeZone = true
+        statisticsTransitionMessage = statisticsSwitchingMessage(for: repaired)
+
+        let key = statisticsCacheKey(for: repaired)
+        if let cached = validCachedStatisticsSnapshot(forKey: key) {
+            let identity = StatisticsIdentity(
+                preference: repaired,
+                resolvedIdentifier: StatisticsContext(preference: repaired, now: Date()).resolvedIdentifier,
+                generation: refreshGeneration,
+                now: Date()
+            )
+            let rebound = MultiRuntimeUsageSnapshot(
+                refreshedAt: cached.refreshedAt,
+                runtimes: cached.runtimes,
+                aggregate: cached.aggregate,
+                statisticsIdentity: identity
+            )
+            apply(rebound)
+            cacheStatisticsSnapshot(rebound)
+            finishStatisticsTimeZoneSwitch(cached: true)
+            return
+        }
         refresh()
+    }
+
+    private func statisticsCacheKey(for preference: StatisticsTimeZonePreference) -> String {
+        StatisticsContext(preference: preference, now: Date()).resolvedIdentifier
+    }
+
+    private func validCachedStatisticsSnapshot(forKey key: String) -> MultiRuntimeUsageSnapshot? {
+        guard let entry = statisticsSnapshotCache[key],
+              Date().timeIntervalSince(entry.cachedAt) <= statisticsSnapshotCacheTTL else {
+            statisticsSnapshotCache.removeValue(forKey: key)
+            statisticsSnapshotCacheOrder.removeAll { $0 == key }
+            return nil
+        }
+        statisticsSnapshotCacheOrder.removeAll { $0 == key }
+        statisticsSnapshotCacheOrder.append(key)
+        return entry.snapshot
+    }
+
+    private func cacheStatisticsSnapshot(_ snapshot: MultiRuntimeUsageSnapshot) {
+        let key = snapshot.statisticsIdentity.resolvedIdentifier
+        statisticsSnapshotCache[key] = StatisticsSnapshotCacheEntry(snapshot: snapshot, cachedAt: Date())
+        statisticsSnapshotCacheOrder.removeAll { $0 == key }
+        statisticsSnapshotCacheOrder.append(key)
+        while statisticsSnapshotCacheOrder.count > statisticsSnapshotCacheLimit {
+            let evicted = statisticsSnapshotCacheOrder.removeFirst()
+            statisticsSnapshotCache.removeValue(forKey: evicted)
+        }
+    }
+
+    private func statisticsSwitchingMessage(for preference: StatisticsTimeZonePreference) -> String {
+        let identifier = StatisticsContext(preference: preference, now: Date()).resolvedIdentifier
+        return "正在切换到 \(identifier)…"
+    }
+
+    private func finishStatisticsTimeZoneSwitch(cached: Bool = false) {
+        isSwitchingStatisticsTimeZone = false
+        let identifier = multiRuntimeSnapshot.statisticsIdentity.resolvedIdentifier
+        statisticsTransitionMessage = cached ? "已切换到 \(identifier) · 缓存" : "已切换到 \(identifier)"
+        statisticsFeedbackTimer?.invalidate()
+        statisticsFeedbackTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { [weak self] _ in
+            self?.statisticsTransitionMessage = nil
+        }
     }
 
     private func scheduleStatisticsRollover() {
@@ -3480,6 +3562,9 @@ struct SettingsPanelView: View {
     }
 
     private var statisticsTimeZoneDetail: String {
+        if let message = store.statisticsTransitionMessage {
+            return message
+        }
         let identity = store.multiRuntimeSnapshot.statisticsIdentity
         switch identity.preference.selection {
         case .system:
