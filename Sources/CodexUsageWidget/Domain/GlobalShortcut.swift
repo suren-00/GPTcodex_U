@@ -1,7 +1,7 @@
 import Carbon.HIToolbox
 import Cocoa
 
-struct GlobalShortcut: Equatable {
+struct GlobalShortcut: Hashable {
     static let `default` = GlobalShortcut(
         keyCode: UInt32(kVK_ANSI_U),
         carbonModifiers: UInt32(cmdKey),
@@ -24,6 +24,23 @@ struct GlobalShortcut: Equatable {
         if carbonModifiers & UInt32(shiftKey) != 0 { result += "⇧" }
         if carbonModifiers & UInt32(cmdKey) != 0 { result += "⌘" }
         return result + keyLabel
+    }
+
+    var validationError: GlobalShortcutValidationError? {
+        if self == .default { return nil }
+
+        let modifierCount = [cmdKey, controlKey, optionKey, shiftKey]
+            .filter { carbonModifiers & UInt32($0) != 0 }
+            .count
+        guard modifierCount >= 2 else { return .tooFewModifiers }
+        guard carbonModifiers & UInt32(cmdKey | controlKey) != 0 else {
+            return .requiresCommandOrControl
+        }
+        guard !Self.reservedSystemShortcuts.contains(where: {
+            $0.keyCode == keyCode && $0.carbonModifiers == carbonModifiers
+        }) else { return .reservedSystemShortcut }
+        guard Self.supportedKeyCodes.contains(keyCode) else { return .unsupportedKey }
+        return nil
     }
 
     static func load(defaults: UserDefaults = .standard) -> GlobalShortcut? {
@@ -74,6 +91,27 @@ struct GlobalShortcut: Equatable {
         return GlobalShortcut(keyCode: keyCode, carbonModifiers: modifiers, keyLabel: label)
     }
 
+    private static let supportedKeyCodes: Set<UInt32> = Set([
+        kVK_ANSI_A, kVK_ANSI_B, kVK_ANSI_C, kVK_ANSI_D, kVK_ANSI_E,
+        kVK_ANSI_F, kVK_ANSI_G, kVK_ANSI_H, kVK_ANSI_I, kVK_ANSI_J,
+        kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_M, kVK_ANSI_N, kVK_ANSI_O,
+        kVK_ANSI_P, kVK_ANSI_Q, kVK_ANSI_R, kVK_ANSI_S, kVK_ANSI_T,
+        kVK_ANSI_U, kVK_ANSI_V, kVK_ANSI_W, kVK_ANSI_X, kVK_ANSI_Y,
+        kVK_ANSI_Z, kVK_ANSI_0, kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3,
+        kVK_ANSI_4, kVK_ANSI_5, kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8,
+        kVK_ANSI_9, kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow,
+        kVK_DownArrow, kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5,
+        kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10, kVK_F11, kVK_F12
+    ].map(UInt32.init))
+
+    private static let reservedSystemShortcuts: [GlobalShortcut] = [
+        GlobalShortcut(keyCode: UInt32(kVK_Escape), carbonModifiers: UInt32(cmdKey | optionKey), keyLabel: "⎋"),
+        GlobalShortcut(keyCode: UInt32(kVK_ANSI_Q), carbonModifiers: UInt32(cmdKey | controlKey), keyLabel: "Q"),
+        GlobalShortcut(keyCode: UInt32(kVK_ANSI_3), carbonModifiers: UInt32(cmdKey | shiftKey), keyLabel: "3"),
+        GlobalShortcut(keyCode: UInt32(kVK_ANSI_4), carbonModifiers: UInt32(cmdKey | shiftKey), keyLabel: "4"),
+        GlobalShortcut(keyCode: UInt32(kVK_ANSI_5), carbonModifiers: UInt32(cmdKey | shiftKey), keyLabel: "5")
+    ]
+
     private static let specialKeyLabels: [UInt32: String] = [
         UInt32(kVK_Return): "↩",
         UInt32(kVK_Tab): "⇥",
@@ -96,17 +134,79 @@ struct GlobalShortcut: Equatable {
     ]
 }
 
+enum GlobalShortcutValidationError: Equatable {
+    case tooFewModifiers
+    case requiresCommandOrControl
+    case unsupportedKey
+    case reservedSystemShortcut
+
+    func message(language: WidgetLanguage) -> String {
+        switch self {
+        case .tooFewModifiers:
+            return language.text(
+                "自定义快捷键至少需要两个修饰键。",
+                "Custom shortcuts require at least two modifier keys."
+            )
+        case .requiresCommandOrControl:
+            return language.text(
+                "快捷键必须包含 Command 或 Control。",
+                "The shortcut must include Command or Control."
+            )
+        case .unsupportedKey:
+            return language.text(
+                "请选择字母、数字、方向键或 F1–F12。",
+                "Choose a letter, number, arrow key, or F1–F12."
+            )
+        case .reservedSystemShortcut:
+            return language.text(
+                "该组合由 macOS 保留，请选择其他快捷键。",
+                "This combination is reserved by macOS. Choose another shortcut."
+            )
+        }
+    }
+}
+
+enum GlobalShortcutRegistrationFailure: Error, Equatable {
+    case occupied
+    case failed
+}
+
+enum GlobalShortcutRegistrationTransaction {
+    static func replace<Reference, Failure: Error>(
+        current: Reference?,
+        registerCandidate: () -> Result<Reference, Failure>,
+        unregister: (Reference) -> Void
+    ) -> Result<Reference, Failure> {
+        switch registerCandidate() {
+        case .failure(let error):
+            return .failure(error)
+        case .success(let candidate):
+            if let current { unregister(current) }
+            return .success(candidate)
+        }
+    }
+}
+
 enum GlobalShortcutError: Equatable {
+    case invalid(GlobalShortcutValidationError)
+    case occupied
     case registrationFailed
     case savedShortcutResetToDefault
     case noShortcutAvailable
 
     func message(language: WidgetLanguage) -> String {
         switch self {
+        case .invalid(let error):
+            return error.message(language: language)
+        case .occupied:
+            return language.text(
+                "该快捷键已被其他应用独占，请选择其他组合。",
+                "This shortcut is exclusively used by another app. Choose another combination."
+            )
         case .registrationFailed:
             return language.text(
-                "无法注册该快捷键，可能已被其他应用占用。",
-                "Could not register this shortcut. Another app may be using it."
+                "系统无法注册该快捷键，请选择其他组合。",
+                "The system could not register this shortcut. Choose another combination."
             )
         case .savedShortcutResetToDefault:
             return language.text(

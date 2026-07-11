@@ -2546,7 +2546,7 @@ final class AppSettings: ObservableObject {
     @Published private(set) var statusItemPreferences: StatusItemPreferences
     @Published private(set) var globalShortcut: GlobalShortcut?
     @Published private(set) var globalShortcutError: GlobalShortcutError?
-    var globalShortcutRegistration: ((GlobalShortcut) -> Bool)?
+    var globalShortcutRegistration: ((GlobalShortcut) -> Result<Void, GlobalShortcutRegistrationFailure>)?
     var globalShortcutUnregistration: (() -> Void)?
 
     init(defaults: UserDefaults = .standard) {
@@ -2567,7 +2567,13 @@ final class AppSettings: ObservableObject {
         skippedUpdateVersion = defaults.string(forKey: Self.skippedUpdateVersionKey)
         visibleRuntimeScopes = Self.storedVisibleRuntimeScopes(defaults: defaults)
         statusItemPreferences = StatusItemPreferencesStore.load(defaults: defaults)
-        globalShortcut = GlobalShortcut.load(defaults: defaults)
+        let storedShortcut = GlobalShortcut.load(defaults: defaults)
+        if let storedShortcut, storedShortcut.validationError != nil {
+            globalShortcut = .default
+            GlobalShortcut.default.save(defaults: defaults)
+        } else {
+            globalShortcut = storedShortcut
+        }
         globalShortcutError = nil
     }
 
@@ -2626,7 +2632,21 @@ final class AppSettings: ObservableObject {
 
     func requestGlobalShortcut(_ shortcut: GlobalShortcut) {
         guard shortcut != globalShortcut else { return }
-        guard globalShortcutRegistration?(shortcut) == true else {
+        if let error = shortcut.validationError {
+            globalShortcutError = .invalid(error)
+            return
+        }
+        guard let result = globalShortcutRegistration?(shortcut) else {
+            globalShortcutError = .registrationFailed
+            return
+        }
+        switch result {
+        case .success:
+            break
+        case .failure(.occupied):
+            globalShortcutError = .occupied
+            return
+        case .failure(.failed):
             globalShortcutError = .registrationFailed
             return
         }
@@ -3358,7 +3378,10 @@ struct SettingsPanelView: View {
 
                     SettingsPickerRow(
                         title: language.text("快捷键", "Shortcut"),
-                        detail: language.text("点击后按下包含修饰键的新组合", "Click, then press a combination with a modifier")
+                        detail: language.text(
+                            "自定义组合至少需要两个修饰键，并包含 Command 或 Control",
+                            "Custom combinations need two modifiers, including Command or Control"
+                        )
                     ) {
                         HStack(spacing: 8) {
                             ShortcutRecorderView(
@@ -7100,7 +7123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         observeStatusItemUsage()
         observeSettings()
         settings.globalShortcutRegistration = { [weak self] shortcut in
-            self?.replaceGlobalHotKey(with: shortcut) ?? false
+            self?.replaceGlobalHotKey(with: shortcut) ?? .failure(.failed)
         }
         settings.globalShortcutUnregistration = { [weak self] in
             self?.unregisterGlobalHotKeyReference()
@@ -7595,13 +7618,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private func registerGlobalHotKey(_ shortcut: GlobalShortcut) -> Bool {
         debugLog("register global hotkey \(shortcut.displayName)")
         guard installGlobalHotKeyHandler() else { return false }
-        let registered = registerHotKeyReference(shortcut, id: 1, reference: &globalHotKeyRef)
-        if registered {
+        let status = registerHotKeyReference(shortcut, id: 1, reference: &globalHotKeyRef)
+        if status == noErr {
             debugLog("global hotkey registered")
         } else {
-            debugLog("RegisterEventHotKey failed")
+            debugLog("RegisterEventHotKey failed status=\(status)")
         }
-        return registered
+        return status == noErr
     }
 
     @discardableResult
@@ -7635,37 +7658,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         return true
     }
 
-    private func replaceGlobalHotKey(with shortcut: GlobalShortcut) -> Bool {
-        guard installGlobalHotKeyHandler() else { return false }
-        var candidateRef: EventHotKeyRef?
-        guard registerHotKeyReference(shortcut, id: 2, reference: &candidateRef),
-              let candidateRef
-        else {
-            debugLog("replacement hotkey registration failed")
-            return false
+    private func replaceGlobalHotKey(
+        with shortcut: GlobalShortcut
+    ) -> Result<Void, GlobalShortcutRegistrationFailure> {
+        guard installGlobalHotKeyHandler() else { return .failure(.failed) }
+        let replacement: Result<EventHotKeyRef, GlobalShortcutRegistrationFailure> =
+            GlobalShortcutRegistrationTransaction.replace(
+                current: globalHotKeyRef,
+                registerCandidate: {
+                    var candidateRef: EventHotKeyRef?
+                    let status = registerHotKeyReference(
+                        shortcut,
+                        id: 2,
+                        reference: &candidateRef
+                    )
+                    guard status == noErr, let candidateRef else {
+                        debugLog("replacement hotkey registration failed status=\(status)")
+                        return .failure(status == eventHotKeyExistsErr ? .occupied : .failed)
+                    }
+                    return .success(candidateRef)
+                },
+                unregister: { UnregisterEventHotKey($0) }
+            )
+        switch replacement {
+        case .failure(let error):
+            return .failure(error)
+        case .success(let candidateRef):
+            globalHotKeyRef = candidateRef
+            debugLog("global hotkey replaced with \(shortcut.displayName)")
+            return .success(())
         }
-        if let globalHotKeyRef {
-            UnregisterEventHotKey(globalHotKeyRef)
-        }
-        globalHotKeyRef = candidateRef
-        debugLog("global hotkey replaced with \(shortcut.displayName)")
-        return true
     }
 
     private func registerHotKeyReference(
         _ shortcut: GlobalShortcut,
         id: UInt32,
         reference: inout EventHotKeyRef?
-    ) -> Bool {
+    ) -> OSStatus {
         let hotKeyID = EventHotKeyID(signature: fourCharCode("CDXU"), id: id)
         return RegisterEventHotKey(
             shortcut.keyCode,
             shortcut.carbonModifiers,
             hotKeyID,
             GetApplicationEventTarget(),
-            0,
+            UInt32(kEventHotKeyExclusive),
             &reference
-        ) == noErr
+        )
     }
 
     private func unregisterGlobalHotKey() {
@@ -7687,6 +7725,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 @main
 struct codexUMain {
     static func main() {
+        if CommandLine.arguments.contains("--self-test-global-shortcut") {
+            exit(GlobalShortcutSelfTest.run() ? 0 : 1)
+        }
+
+        if let helperIndex = CommandLine.arguments.firstIndex(of: "--hold-exclusive-hotkey"),
+           CommandLine.arguments.indices.contains(helperIndex + 1) {
+            GlobalShortcutSelfTest.holdExclusiveShortcut(
+                readyFile: CommandLine.arguments[helperIndex + 1]
+            )
+        }
+
         if CommandLine.arguments.contains("--self-test-status-item") {
             exit(StatusItemPresentationSelfTest.run() ? 0 : 1)
         }
