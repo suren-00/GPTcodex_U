@@ -51,6 +51,12 @@ final class PerformanceMonitor {
         var count = 0
         var failureCount = 0
         var samples: [Double] = []
+
+        init(count: Int = 0, failureCount: Int = 0, samples: [Double] = []) {
+            self.count = count
+            self.failureCount = failureCount
+            self.samples = samples
+        }
     }
 
     private static let log = OSLog(subsystem: "com.guomeiqing.codexU", category: "performance")
@@ -75,6 +81,20 @@ final class PerformanceMonitor {
         )[0]
             .appendingPathComponent("codexU", isDirectory: true)
             .appendingPathComponent("performance-v1.json")
+
+        if let data = try? Data(contentsOf: self.reportURL),
+           let report = try? JSONDecoder().decode(PerformanceReport.self, from: data),
+           report.version == 1 {
+            for operation in PerformanceOperation.allCases {
+                guard let persisted = report.operations[operation.rawValue] else { continue }
+                summaries[operation] = MutableOperationSummary(
+                    count: persisted.count,
+                    failureCount: persisted.failureCount,
+                    samples: Array(persisted.samplesMilliseconds.suffix(maximumOperationSamples))
+                )
+            }
+            resources = Array(report.resources.suffix(maximumResourceSamples))
+        }
     }
 
     func begin(_ operation: PerformanceOperation) -> PerformanceSpan {
