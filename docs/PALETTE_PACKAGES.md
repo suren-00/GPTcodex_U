@@ -2,6 +2,14 @@
 
 codexU palettes are reviewed, built-in resource plugins. Adding a directory that satisfies this contract is enough for the app to discover it and expose it in General settings; no Swift registration is required.
 
+Start a contribution with the repository template:
+
+```sh
+cp -R contrib/palette-template Resources/Palettes/community.example
+```
+
+Rename the destination and `manifest.id` to the same stable ID, then edit both token variants and localization metadata. This is a repository contribution workflow, not a user-side theme installer.
+
 ## Package layout
 
 ```text
@@ -50,6 +58,8 @@ Required v1 fields are `schemaVersion`, `id`, `version`, `minimumAppVersion`, `l
 
 Production builds load `stable` packages. v1 accepts only three-part versions, HTTPS author URLs, MIT-licensed built-ins, and the capabilities `color-tokens`, `svg-patterns`, and `lod-assets`.
 
+`deprecated` packages remain resolvable only for an existing saved selection and are not offered to new users. `experimental` packages are available only to explicit development self-tests.
+
 ## Configurable tokens
 
 Both `tokens/light.json` and `tokens/dark.json` must independently provide:
@@ -82,6 +92,8 @@ Each entry also declares `appearance` (`light`/`dark`), `lod` (`l0`/`l1`/`l2`), 
 
 SVGs are static data. Scripts, animation, text/fonts, images, foreign objects, event handlers, external/data/file URLs, DOCTYPE/entities, absolute paths, `..`, and symlinks are rejected. A file is limited to 512 KiB, 4096 elements, depth 32, and 32 filter primitives; the whole package is limited to 4 MiB.
 
+The entire package is whitelist validated. Root files are limited to `manifest.json`, `README.md`, and `LICENSE`; Token JSON belongs in `tokens/`, localization JSON in `localizations/`, the asset index at `assets/manifest.json`, and optional SVG files under `assets/light`, `assets/dark`, or `assets/shared`. `README.md` and `LICENSE` must be present and non-empty. Hidden, unknown, executable, linked, or out-of-layout files invalidate the whole package.
+
 Ring assets contain a complete transparent ring and no baked percentage. codexU applies the progress mask and positions caps. The primary and secondary rings must remain visually distinct rather than scaling one texture for both roles.
 
 ## Review checklist
@@ -91,3 +103,4 @@ Ring assets contain a complete transparent ring and no baked percentage. codexU 
 3. Check 0%, 1%, 35%, 73%, 93%, 99%, and 100% ring progress, including single 7d and dual-ring topology.
 4. Verify data hierarchy, text contrast, cultural/design attribution, and that decoration does not change layout.
 5. Attach Light/Dark screenshots to the PR. The maintainers may decline visually inconsistent packages even when schema validation passes.
+6. Complete the palette section in `.github/pull_request_template.md`, including source, license, status-conflict analysis, and visual evidence links.
