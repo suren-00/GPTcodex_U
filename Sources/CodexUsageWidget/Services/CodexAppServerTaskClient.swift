@@ -14,7 +14,6 @@ protocol CodexTaskEventClient: AnyObject {
     func stopIfIdle()
     func stop()
     func refreshThreads()
-    func submit(requestID: CodexRequestID, decision: TaskApprovalDecision) -> Bool
 }
 
 final class CodexAppServerTaskClient: CodexTaskEventClient {
@@ -82,25 +81,6 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
     func refreshThreads() {
         queue.async { [weak self] in
             self?.requestThreadList()
-        }
-    }
-
-    func submit(requestID: CodexRequestID, decision: TaskApprovalDecision) -> Bool {
-        queue.sync {
-            guard process?.isRunning == true,
-                  reducer.markSubmitting(requestID: requestID, decision: decision)
-            else { return false }
-
-            let didWrite = writeJSONObject([
-                "id": requestID.jsonObject,
-                "result": ["decision": decision.rawValue]
-            ])
-            if didWrite {
-                publishSnapshot()
-            } else {
-                handleDisconnect()
-            }
-            return didWrite
         }
     }
 
@@ -209,12 +189,9 @@ final class CodexAppServerTaskClient: CodexTaskEventClient {
 
     private func handle(_ object: [String: Any]) {
         if let method = object["method"] as? String {
+            guard object["id"] == nil else { return }
             let params = object["params"] as? [String: Any] ?? [:]
-            if let requestID = CodexRequestID(object["id"]) {
-                if reducer.applyServerRequest(requestID: requestID, method: method, params: params) {
-                    publishSnapshot()
-                }
-            } else if reducer.applyNotification(method: method, params: params) {
+            if reducer.applyNotification(method: method, params: params) {
                 publishSnapshot()
             }
             return

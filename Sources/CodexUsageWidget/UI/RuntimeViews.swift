@@ -179,8 +179,6 @@ struct RuntimeStatusMenuView: View {
 
     private func attentionTitle(_ kind: TaskAttentionKind) -> String {
         switch kind {
-        case .approval:
-            return language.text("等待审批", "Approval needed")
         case .userInput:
             return language.text("等待回答", "Input needed")
         case .failure:
@@ -212,8 +210,6 @@ struct RuntimeStatusMenuView: View {
 
     private func attentionIcon(_ kind: TaskAttentionKind) -> String {
         switch kind {
-        case .approval:
-            return "checkmark.shield.fill"
         case .userInput:
             return "questionmark.bubble.fill"
         case .failure:
@@ -229,7 +225,7 @@ struct RuntimeStatusMenuView: View {
         switch kind {
         case .failure:
             return FixedVisualPalette.statusDanger
-        case .approval, .userInput, .dataIssue:
+        case .userInput, .dataIssue:
             return FixedVisualPalette.statusWarning
         case .update:
             return FixedVisualPalette.statusInfo

@@ -271,7 +271,6 @@ struct TaskItem: Identifiable, Equatable {
     let threadID: String?
     let runtimeState: TaskRuntimeState
     let isRealtime: Bool
-    let approval: TaskApprovalRequest?
 
     init(
         id: String,
@@ -284,8 +283,7 @@ struct TaskItem: Identifiable, Equatable {
         kind: TaskColumnKind,
         threadID: String? = nil,
         runtimeState: TaskRuntimeState = .recorded,
-        isRealtime: Bool = false,
-        approval: TaskApprovalRequest? = nil
+        isRealtime: Bool = false
     ) {
         self.id = id
         self.code = code
@@ -298,7 +296,6 @@ struct TaskItem: Identifiable, Equatable {
         self.threadID = threadID
         self.runtimeState = runtimeState
         self.isRealtime = isRealtime
-        self.approval = approval
     }
 }
 
@@ -859,11 +856,6 @@ final class UsageStore: ObservableObject {
     func requestTaskFocus(scope: RuntimeScope, threadID: String?) {
         selectRuntime(scope)
         taskFocusRequest = TaskFocusRequest(id: UUID(), runtimeScope: scope, threadID: threadID)
-    }
-
-    @discardableResult
-    func submitApproval(_ approval: TaskApprovalRequest, decision: TaskApprovalDecision) -> Bool {
-        codexTaskClient.submit(requestID: approval.requestID, decision: decision)
     }
 
     func attentionItems(for scopes: [RuntimeScope], updateResult: AppUpdateResult) -> [TaskAttentionItem] {
@@ -2476,6 +2468,7 @@ final class CodexUsageReader {
             SELECT id, title, preview, cwd, tokens_used AS tokens, updated_at AS updatedAt, recency_at AS recencyAt, model
             FROM threads
             WHERE archived = 0
+              AND COALESCE(thread_source, '') <> 'subagent'
               AND preview <> ''
               AND (
                 updated_at >= \(Int(dayStart.timeIntervalSince1970))
@@ -2489,6 +2482,7 @@ final class CodexUsageReader {
             SELECT id, title, preview, cwd, tokens_used AS tokens, COALESCE(archived_at, updated_at) AS updatedAt, model
             FROM threads
             WHERE archived = 1
+              AND COALESCE(thread_source, '') <> 'subagent'
               AND COALESCE(archived_at, updated_at) >= \(Int(dayStart.timeIntervalSince1970))
             ORDER BY COALESCE(archived_at, updated_at) DESC;
             """
@@ -3766,9 +3760,6 @@ struct UsageWidgetView: View {
                     focusedThreadID: focusedThreadID,
                     onOpenSession: { threadID in
                         CodexSessionOpener.open(threadID: threadID)
-                    },
-                    onDecision: { approval, decision in
-                        store.submitApproval(approval, decision: decision)
                     }
                 )
                     .frame(maxWidth: .infinity, alignment: .top)
@@ -8280,7 +8271,6 @@ struct TaskBoardColumnView: View {
     let language: WidgetLanguage
     let focusedThreadID: String?
     let onOpenSession: (String) -> Bool
-    let onDecision: (TaskApprovalRequest, TaskApprovalDecision) -> Bool
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -8320,8 +8310,7 @@ struct TaskBoardColumnView: View {
                         item: item,
                         language: language,
                         isFocused: item.threadID != nil && item.threadID == focusedThreadID,
-                        onOpenSession: onOpenSession,
-                        onDecision: onDecision
+                        onOpenSession: onOpenSession
                     )
                 }
                 if column.count > column.items.count {
@@ -8351,24 +8340,21 @@ struct TaskIssueCard: View {
     let language: WidgetLanguage
     let isFocused: Bool
     let onOpenSession: (String) -> Bool
-    let onDecision: (TaskApprovalRequest, TaskApprovalDecision) -> Bool
-    @State private var showsApprovalDetail = false
-    @State private var actionFailed = false
     @State private var sessionOpenFailed = false
 
     @ViewBuilder
     var body: some View {
-        if canOpenSession && item.approval == nil {
+        if canOpenSession {
             Button {
                 openSession()
             } label: {
-                cardSurface(showsOpenButton: false)
+                cardSurface
             }
             .buttonStyle(.plain)
             .help(language.text("在 Codex 中打开", "Open in Codex"))
             .accessibilityHint(language.text("打开对应的 Codex Session", "Opens the matching Codex session"))
         } else {
-            cardSurface(showsOpenButton: canOpenSession)
+            cardSurface
         }
     }
 
@@ -8377,7 +8363,7 @@ struct TaskIssueCard: View {
         return CodexSessionLink.url(threadID: threadID) != nil
     }
 
-    private func cardSurface(showsOpenButton: Bool) -> some View {
+    private var cardSurface: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text(item.code)
@@ -8392,23 +8378,10 @@ struct TaskIssueCard: View {
                         .lineLimit(1)
                 }
                 if canOpenSession {
-                    if showsOpenButton {
-                        Button {
-                            openSession()
-                        } label: {
-                            Image(systemName: "arrow.up.forward.app")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .help(language.text("在 Codex 中打开", "Open in Codex"))
-                        .accessibilityLabel(language.text("在 Codex 中打开", "Open in Codex"))
-                    } else {
-                        Image(systemName: "arrow.up.forward.app")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                            .accessibilityHidden(true)
-                    }
+                    Image(systemName: "arrow.up.forward.app")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
                 }
             }
 
@@ -8426,7 +8399,7 @@ struct TaskIssueCard: View {
                     .truncationMode(.tail)
             }
 
-            taskIntervention
+            taskRuntimeNotice
 
             if sessionOpenFailed {
                 Text(language.text("无法打开 Codex Session", "Could not open Codex session"))
@@ -8463,52 +8436,8 @@ struct TaskIssueCard: View {
     }
 
     @ViewBuilder
-    private var taskIntervention: some View {
-        if let approval = item.approval {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(approval.summary)
-                    .font(.system(size: 9, weight: .semibold))
-                    .lineLimit(2)
-                if let reason = approval.reason, !reason.isEmpty {
-                    Text(reason)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                if let detail = approval.detail, !detail.isEmpty {
-                    Button {
-                        showsApprovalDetail.toggle()
-                    } label: {
-                        Label(
-                            showsApprovalDetail
-                                ? language.text("收起详情", "Hide details")
-                                : language.text("查看详情", "View details"),
-                            systemImage: showsApprovalDetail ? "chevron.up" : "chevron.down"
-                        )
-                        .font(.system(size: 9, weight: .semibold))
-                    }
-                    .buttonStyle(.plain)
-                    if showsApprovalDetail {
-                        Text(detail)
-                            .font(.system(size: 9, weight: .regular, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(5)
-                            .textSelection(.enabled)
-                    }
-                }
-                approvalActions(approval)
-                if actionFailed {
-                    Text(language.text("请求已失效，请返回 Codex 处理", "Request is no longer available; handle it in Codex"))
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(FixedVisualPalette.statusWarning)
-                }
-            }
-            .padding(.top, 2)
-        } else if item.runtimeState == .waitingApproval {
-            Text(language.text("请在 Codex 中处理审批", "Handle this approval in Codex"))
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(FixedVisualPalette.statusWarning)
-        } else if item.runtimeState == .waitingInput {
+    private var taskRuntimeNotice: some View {
+        if item.runtimeState == .waitingInput {
             Text(language.text("请返回 Codex 补充信息", "Return to Codex to answer"))
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(FixedVisualPalette.statusWarning)
@@ -8517,59 +8446,6 @@ struct TaskIssueCard: View {
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.secondary)
         }
-    }
-
-    @ViewBuilder
-    private func approvalActions(_ approval: TaskApprovalRequest) -> some View {
-        if approval.submissionState == .submitting {
-            HStack(spacing: 6) {
-                ProgressView()
-                    .controlSize(.small)
-                Text(language.text("正在提交决定", "Submitting decision"))
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-        } else {
-            HStack(spacing: 5) {
-                if approval.availableDecisions.contains(.accept) {
-                    Button(language.text("允许一次", "Allow once")) {
-                        submit(approval, decision: .accept)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.mini)
-                }
-                if approval.availableDecisions.contains(.decline) {
-                    Button(language.text("拒绝", "Decline")) {
-                        submit(approval, decision: .decline)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                }
-                if approval.availableDecisions.contains(.cancel) {
-                    Button(language.text("停止", "Stop"), role: .destructive) {
-                        submit(approval, decision: .cancel)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                }
-                if approval.availableDecisions.contains(.acceptForSession) {
-                    Menu {
-                        Button(language.text("本会话允许", "Allow for session")) {
-                            submit(approval, decision: .acceptForSession)
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .controlSize(.mini)
-                    .help(language.text("更多审批选项", "More approval options"))
-                }
-            }
-        }
-    }
-
-    private func submit(_ approval: TaskApprovalRequest, decision: TaskApprovalDecision) {
-        actionFailed = !onDecision(approval, decision)
     }
 }
 
@@ -8617,7 +8493,7 @@ struct TaskChip: View {
         switch runtimeState {
         case .failed:
             return FixedVisualPalette.statusDanger
-        case .waitingApproval, .waitingInput, .running:
+        case .waitingInput, .running:
             return FixedVisualPalette.statusWarning
         case .completed:
             return FixedVisualPalette.statusSuccess
@@ -8645,7 +8521,7 @@ struct TaskChip: View {
         switch runtimeState {
         case .failed:
             return FixedVisualPalette.statusDangerLightText
-        case .waitingApproval, .waitingInput, .running:
+        case .waitingInput, .running:
             return FixedVisualPalette.statusWarningLightText
         case .completed:
             return FixedVisualPalette.statusSuccessLightText
@@ -8668,8 +8544,6 @@ struct TaskChip: View {
 
     private var chipIcon: String {
         switch runtimeState {
-        case .waitingApproval:
-            return "checkmark.shield.fill"
         case .waitingInput:
             return "questionmark.bubble.fill"
         case .failed:
@@ -9249,13 +9123,14 @@ private func localizedTaskState(_ item: TaskItem, language: WidgetLanguage) -> S
     }
     switch item.runtimeState {
     case .recorded:
+        if item.kind == .active {
+            return language.text("最近活跃", "Recently active")
+        }
         return item.isRealtime ? language.text("实时", "Live") : language.text("记录", "Recorded")
     case .idle:
         return language.text("空闲", "Idle")
     case .running:
         return language.text("执行中", "Running")
-    case .waitingApproval:
-        return language.text("等待审批", "Approval")
     case .waitingInput:
         return language.text("等待回答", "Needs input")
     case .failed:
