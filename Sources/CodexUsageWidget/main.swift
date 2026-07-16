@@ -3782,6 +3782,7 @@ struct UsageWidgetView: View {
             ForEach(taskBoardColumns) { column in
                 TaskBoardColumnView(
                     column: column,
+                    runtimeScope: store.selectedRuntimeScope,
                     language: language,
                     focusedThreadID: focusedThreadID,
                     onOpenSession: { threadID in
@@ -3849,10 +3850,10 @@ struct UsageWidgetView: View {
 
     private var taskBoardColumns: [TaskColumn] {
         snapshot.taskBoard?.columns ?? [
-            TaskColumn(id: .active, title: localizedTaskColumnTitle(.active, language: language), count: 0, items: []),
-            TaskColumn(id: .pending, title: localizedTaskColumnTitle(.pending, language: language), count: 0, items: []),
-            TaskColumn(id: .scheduled, title: localizedTaskColumnTitle(.scheduled, language: language), count: 0, items: []),
-            TaskColumn(id: .done, title: localizedTaskColumnTitle(.done, language: language), count: 0, items: [])
+            TaskColumn(id: .active, title: localizedTaskColumnTitle(.active, runtimeScope: store.selectedRuntimeScope, language: language), count: 0, items: []),
+            TaskColumn(id: .pending, title: localizedTaskColumnTitle(.pending, runtimeScope: store.selectedRuntimeScope, language: language), count: 0, items: []),
+            TaskColumn(id: .scheduled, title: localizedTaskColumnTitle(.scheduled, runtimeScope: store.selectedRuntimeScope, language: language), count: 0, items: []),
+            TaskColumn(id: .done, title: localizedTaskColumnTitle(.done, runtimeScope: store.selectedRuntimeScope, language: language), count: 0, items: [])
         ]
     }
 
@@ -8294,6 +8295,7 @@ struct DashboardCardHeader<Trailing: View>: View {
 
 struct TaskBoardColumnView: View {
     let column: TaskColumn
+    let runtimeScope: RuntimeScope
     let language: WidgetLanguage
     let focusedThreadID: String?
     let onOpenSession: (String) -> Bool
@@ -8302,10 +8304,10 @@ struct TaskBoardColumnView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: taskColumnIcon(column.id))
+                Image(systemName: taskColumnIcon(column.id, runtimeScope: runtimeScope))
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(taskAccentForegroundColor(column.id, colorScheme: colorScheme))
-                Text(localizedTaskColumnTitle(column.id, language: language))
+                    .foregroundStyle(taskAccentForegroundColor(column.id, runtimeScope: runtimeScope, colorScheme: colorScheme))
+                Text(localizedTaskColumnTitle(column.id, runtimeScope: runtimeScope, language: language))
                     .font(.system(size: 11, weight: .semibold))
                     .lineLimit(1)
                 Text("\(column.count)")
@@ -8313,11 +8315,10 @@ struct TaskBoardColumnView: View {
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 4)
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
             }
             .frame(height: dashboardCardHeaderHeight, alignment: .center)
+            .help(localizedTaskColumnHelp(column.id, runtimeScope: runtimeScope, language: language))
+            .accessibilityElement(children: .combine)
 
             if column.items.isEmpty {
                 VStack(spacing: 5) {
@@ -8352,10 +8353,10 @@ struct TaskBoardColumnView: View {
         .frame(minHeight: 274, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: dashboardCardCornerRadius, style: .continuous)
-                .fill(taskColumnFill(column.id))
+                .fill(taskColumnFill(column.id, runtimeScope: runtimeScope))
                 .overlay(
                     RoundedRectangle(cornerRadius: dashboardCardCornerRadius, style: .continuous)
-                        .strokeBorder(taskAccentColor(column.id).opacity(0.12), lineWidth: 0.8)
+                        .strokeBorder(taskAccentColor(column.id, runtimeScope: runtimeScope).opacity(0.12), lineWidth: 0.8)
                 )
         )
     }
@@ -8366,7 +8367,12 @@ struct TaskIssueCard: View {
     let language: WidgetLanguage
     let isFocused: Bool
     let onOpenSession: (String) -> Bool
+    @Environment(\.visualTokens) private var visualTokens
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sessionOpenFailed = false
+    @State private var isHovering = false
+    @State private var hasPointingHandCursor = false
+    @FocusState private var hasKeyboardFocus: Bool
 
     @ViewBuilder
     var body: some View {
@@ -8377,10 +8383,17 @@ struct TaskIssueCard: View {
                 cardSurface
             }
             .buttonStyle(.plain)
-            .help(language.text("在 Codex 中打开", "Open in Codex"))
+            .focused($hasKeyboardFocus)
+            .help(taskCardHelp)
+            .accessibilityLabel(Text(accessibilityLabel))
             .accessibilityHint(language.text("打开对应的 Codex Session", "Opens the matching Codex session"))
+            .onHover(perform: updateHoverState)
+            .onDisappear(perform: releasePointingHandCursor)
         } else {
             cardSurface
+                .help(taskCardHelp)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text(accessibilityLabel))
         }
     }
 
@@ -8391,41 +8404,40 @@ struct TaskIssueCard: View {
 
     private var cardSurface: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(item.code)
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 6) {
+                Text(item.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.9)
+                    .frame(minHeight: 28, alignment: .topLeading)
                 Spacer(minLength: 4)
-                if let updatedAt = item.updatedAt {
-                    Text(relativeTimeText(updatedAt, language: language))
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
                 if canOpenSession {
                     Image(systemName: "arrow.up.forward.app")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(
+                            isHovering
+                                ? AnyShapeStyle(visualTokens.selection.foreground.color)
+                                : AnyShapeStyle(.tertiary)
+                        )
                         .accessibilityHidden(true)
                 }
             }
 
-            Text(item.title)
-                .font(.system(size: 11, weight: .semibold))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .minimumScaleFactor(0.9)
-
-            if !item.detail.isEmpty {
-                Text(localizedTaskDetail(item.detail, language: language))
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+            HStack(spacing: 5) {
+                if !item.detail.isEmpty {
+                    Text(localizedTaskDetail(item.detail, language: language))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Spacer(minLength: 4)
+                if let timeText = localizedTaskTime(item, language: language) {
+                    Text(timeText)
+                        .lineLimit(1)
+                }
             }
-
-            taskRuntimeNotice
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(.secondary)
+            .frame(height: 13)
 
             if sessionOpenFailed {
                 Text(language.text("无法打开 Codex Session", "Could not open Codex session"))
@@ -8436,24 +8448,61 @@ struct TaskIssueCard: View {
             HStack(spacing: 5) {
                 TaskChip(
                     text: localizedTaskState(item, language: language),
-                    kind: item.kind,
-                    runtimeState: item.runtimeState
+                    displayState: item.displayState
                 )
                 Spacer(minLength: 4)
-                TaskAvatar(text: taskAvatarText(item), kind: item.kind)
+                Text(item.code)
+                    .font(.system(size: 8, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                if let tokens = item.tokens, tokens > 0 {
+                    Text(formatTokens(tokens))
+                        .font(.system(size: 8, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
         }
         .padding(dashboardRowPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: dashboardRowCornerRadius, style: .continuous)
+                .fill(isHovering ? visualTokens.selection.fill.color : Color.clear)
+        )
         .cardBackground(cornerRadius: dashboardRowCornerRadius, elevated: true)
         .overlay(
             RoundedRectangle(cornerRadius: dashboardRowCornerRadius, style: .continuous)
                 .strokeBorder(
-                    isFocused ? FixedVisualPalette.statusInfo : Color.clear,
-                    lineWidth: isFocused ? 1.5 : 0
+                    (isFocused || hasKeyboardFocus)
+                        ? FixedVisualPalette.statusInfo
+                        : (isHovering ? visualTokens.selection.stroke.color : Color.clear),
+                    lineWidth: (isFocused || hasKeyboardFocus) ? 1.5 : (isHovering ? 1.0 : 0)
                 )
         )
-        .animation(.easeOut(duration: 0.18), value: isFocused)
+        .contentShape(RoundedRectangle(cornerRadius: dashboardRowCornerRadius, style: .continuous))
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isFocused)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: hasKeyboardFocus)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isHovering)
+    }
+
+    private func updateHoverState(_ hovering: Bool) {
+        isHovering = hovering
+        guard hovering != hasPointingHandCursor else { return }
+        if hovering {
+            NSCursor.pointingHand.push()
+        } else {
+            NSCursor.pop()
+        }
+        hasPointingHandCursor = hovering
+    }
+
+    private func releasePointingHandCursor() {
+        isHovering = false
+        guard hasPointingHandCursor else { return }
+        NSCursor.pop()
+        hasPointingHandCursor = false
     }
 
     private func openSession() {
@@ -8461,41 +8510,31 @@ struct TaskIssueCard: View {
         sessionOpenFailed = !onOpenSession(threadID)
     }
 
-    @ViewBuilder
-    private var taskRuntimeNotice: some View {
-        if item.runtimeState == .waitingInput {
-            Text(language.text("请返回 Codex 补充信息", "Return to Codex to answer"))
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(FixedVisualPalette.statusWarning)
-        } else if item.runtimeState == .disconnected {
-            Text(language.text("实时连接已断开", "Live connection disconnected"))
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
+    private var taskCardHelp: String {
+        var lines = [item.title]
+        if !item.detail.isEmpty { lines.append(localizedTaskDetail(item.detail, language: language)) }
+        lines.append(localizedTaskStateBasis(item.stateBasis, language: language))
+        if canOpenSession { lines.append(language.text("点击在 Codex 中打开", "Click to open in Codex")) }
+        return lines.joined(separator: "\n")
     }
-}
 
-struct TaskAvatar: View {
-    let text: String
-    let kind: TaskColumnKind
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 9, weight: .bold, design: .rounded))
-            .foregroundStyle(taskAccentForegroundColor(kind, colorScheme: colorScheme))
-            .frame(width: 18, height: 18)
-            .background(
-                Circle()
-                    .fill(taskAccentColor(kind).opacity(0.13))
-            )
+    private var accessibilityLabel: String {
+        var parts = [
+            item.title,
+            localizedTaskState(item, language: language)
+        ]
+        if !item.detail.isEmpty { parts.append(localizedTaskDetail(item.detail, language: language)) }
+        if let time = localizedTaskTime(item, language: language) { parts.append(time) }
+        parts.append(canOpenSession
+            ? language.text("可打开", "Openable")
+            : language.text("不可打开", "Not openable"))
+        return parts.joined(separator: "，")
     }
 }
 
 struct TaskChip: View {
     let text: String
-    let kind: TaskColumnKind
-    let runtimeState: TaskRuntimeState
+    let displayState: TaskDisplayState
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -8516,82 +8555,60 @@ struct TaskChip: View {
     }
 
     private var chipAccentColor: Color {
-        switch runtimeState {
+        switch displayState {
         case .failed:
             return FixedVisualPalette.statusDanger
-        case .waitingInput, .running:
+        case .running:
             return FixedVisualPalette.statusWarning
         case .completed:
             return FixedVisualPalette.statusSuccess
-        case .recorded, .idle, .interrupted, .disconnected:
-            break
-        }
-        switch text.lowercased() {
-        case "high", "urgent":
-            return FixedVisualPalette.statusDanger
-        case "medium":
+        case .blocked:
             return FixedVisualPalette.statusWarning
-        case "active":
+        case .recentlyActive:
             return FixedVisualPalette.statusWarning
-        case "cron", "wake":
+        case .scheduled:
             return FixedVisualPalette.statusScheduled
-        case "done":
-            return FixedVisualPalette.statusSuccess
-        default:
-            return taskAccentColor(kind)
+        case .continueLater, .archived, .pending, .unknown:
+            return FixedVisualPalette.statusNeutral
         }
     }
 
     private var chipForegroundColor: Color {
         guard colorScheme == .light else { return chipAccentColor }
-        switch runtimeState {
+        switch displayState {
         case .failed:
             return FixedVisualPalette.statusDangerLightText
-        case .waitingInput, .running:
+        case .running, .blocked, .recentlyActive:
             return FixedVisualPalette.statusWarningLightText
         case .completed:
             return FixedVisualPalette.statusSuccessLightText
-        case .recorded, .idle, .interrupted, .disconnected:
-            break
-        }
-        switch text.lowercased() {
-        case "high", "urgent":
-            return FixedVisualPalette.statusDangerLightText
-        case "medium", "active":
-            return FixedVisualPalette.statusWarningLightText
-        case "cron", "wake":
+        case .scheduled:
             return FixedVisualPalette.statusScheduledLightText
-        case "done":
-            return FixedVisualPalette.statusSuccessLightText
-        default:
-            return taskAccentForegroundColor(kind, colorScheme: colorScheme)
+        case .continueLater, .archived, .pending, .unknown:
+            return FixedVisualPalette.statusNeutralLightText
         }
     }
 
     private var chipIcon: String {
-        switch runtimeState {
-        case .waitingInput:
-            return "questionmark.bubble.fill"
+        switch displayState {
         case .failed:
             return "exclamationmark.triangle.fill"
         case .running:
             return "record.circle"
         case .completed:
             return "checkmark.circle.fill"
-        case .interrupted:
-            return "stop.circle.fill"
-        case .disconnected:
-            return "bolt.slash.fill"
-        case .recorded, .idle:
-            break
-        }
-        switch text.lowercased() {
-        case "cron", "wake":
+        case .blocked:
+            return "pause.circle.fill"
+        case .scheduled:
             return "clock.fill"
-        case "done":
-            return "checkmark.circle.fill"
-        default:
-            return "chart.bar.fill"
+        case .archived:
+            return "archivebox.fill"
+        case .unknown:
+            return "questionmark.circle"
+        case .recentlyActive:
+            return "clock.badge.checkmark"
+        case .continueLater, .pending:
+            return "circle"
         }
     }
 }
@@ -9070,7 +9087,7 @@ private func localizedToolCategory(_ category: String, language: WidgetLanguage)
     }
 }
 
-private func taskAccentColor(_ kind: TaskColumnKind) -> Color {
+private func taskAccentColor(_ kind: TaskColumnKind, runtimeScope: RuntimeScope) -> Color {
     switch kind {
     case .active:
         return FixedVisualPalette.statusWarning
@@ -9079,12 +9096,18 @@ private func taskAccentColor(_ kind: TaskColumnKind) -> Color {
     case .scheduled:
         return FixedVisualPalette.statusScheduled
     case .done:
-        return FixedVisualPalette.statusSuccess
+        return runtimeScope == .codex
+            ? FixedVisualPalette.statusNeutral
+            : FixedVisualPalette.statusSuccess
     }
 }
 
-private func taskAccentForegroundColor(_ kind: TaskColumnKind, colorScheme: ColorScheme) -> Color {
-    guard colorScheme == .light else { return taskAccentColor(kind) }
+private func taskAccentForegroundColor(
+    _ kind: TaskColumnKind,
+    runtimeScope: RuntimeScope,
+    colorScheme: ColorScheme
+) -> Color {
+    guard colorScheme == .light else { return taskAccentColor(kind, runtimeScope: runtimeScope) }
     switch kind {
     case .active:
         return FixedVisualPalette.statusWarningLightText
@@ -9093,15 +9116,17 @@ private func taskAccentForegroundColor(_ kind: TaskColumnKind, colorScheme: Colo
     case .scheduled:
         return FixedVisualPalette.statusScheduledLightText
     case .done:
-        return FixedVisualPalette.statusSuccessLightText
+        return runtimeScope == .codex
+            ? FixedVisualPalette.statusNeutralLightText
+            : FixedVisualPalette.statusSuccessLightText
     }
 }
 
-private func taskColumnFill(_ kind: TaskColumnKind) -> Color {
-    taskAccentColor(kind).opacity(0.065)
+private func taskColumnFill(_ kind: TaskColumnKind, runtimeScope: RuntimeScope) -> Color {
+    taskAccentColor(kind, runtimeScope: runtimeScope).opacity(0.065)
 }
 
-private func taskColumnIcon(_ kind: TaskColumnKind) -> String {
+private func taskColumnIcon(_ kind: TaskColumnKind, runtimeScope: RuntimeScope) -> String {
     switch kind {
     case .active:
         return "record.circle"
@@ -9110,20 +9135,67 @@ private func taskColumnIcon(_ kind: TaskColumnKind) -> String {
     case .scheduled:
         return "clock"
     case .done:
-        return "checkmark.circle.fill"
+        return runtimeScope == .codex ? "archivebox.fill" : "checkmark.circle.fill"
     }
 }
 
-private func localizedTaskColumnTitle(_ kind: TaskColumnKind, language: WidgetLanguage) -> String {
+private func localizedTaskColumnTitle(
+    _ kind: TaskColumnKind,
+    runtimeScope: RuntimeScope,
+    language: WidgetLanguage
+) -> String {
     switch kind {
     case .active:
-        return language.text("进行中", "Active")
+        return runtimeScope == .codex
+            ? language.text("最近活跃", "Recent")
+            : language.text("进行中", "Active")
     case .pending:
-        return language.text("待处理", "Pending")
+        return runtimeScope == .codex
+            ? language.text("待继续", "To continue")
+            : language.text("待处理", "Pending")
     case .scheduled:
-        return language.text("定时", "Scheduled")
+        return runtimeScope == .codex
+            ? language.text("定时", "Scheduled")
+            : language.text("计划中", "Planned")
     case .done:
-        return language.text("完成", "Done")
+        return runtimeScope == .codex
+            ? language.text("今日归档", "Archived today")
+            : language.text("已完成", "Completed")
+    }
+}
+
+private func localizedTaskColumnHelp(
+    _ kind: TaskColumnKind,
+    runtimeScope: RuntimeScope,
+    language: WidgetLanguage
+) -> String {
+    if runtimeScope == .claudeCode {
+        return language.text(
+            "状态来自本机 Claude Code task 记录。",
+            "Status comes from local Claude Code task records."
+        )
+    }
+    switch kind {
+    case .active:
+        return language.text(
+            "最近 2 小时有本地活动，不代表任务仍在执行。",
+            "Local activity in the last 2 hours; this does not mean the task is still running."
+        )
+    case .pending:
+        return language.text(
+            "今天未归档、但最近 2 小时没有活动的 Session。",
+            "Today's unarchived sessions without activity in the last 2 hours."
+        )
+    case .scheduled:
+        return language.text(
+            "来自本机启用中的 Codex automation 配置。",
+            "From enabled local Codex automation configurations."
+        )
+    case .done:
+        return language.text(
+            "今天归档的 Codex Session，不代表任务结果成功。",
+            "Codex sessions archived today; this does not imply a successful result."
+        )
     }
 }
 
@@ -9136,37 +9208,121 @@ private func localizedDayLabel(_ label: String, language: WidgetLanguage) -> Str
 
 private func localizedTaskDetail(_ detail: String, language: WidgetLanguage) -> String {
     guard !language.isChinese else { return detail }
+    if detail.hasPrefix("工作日") {
+        return detail.replacingOccurrences(of: "工作日", with: "Weekdays")
+    }
+    if detail.hasPrefix("每天") {
+        return detail.replacingOccurrences(of: "每天", with: "Daily")
+    }
+    if detail.hasPrefix("每周") {
+        let suffix = detail.dropFirst(2)
+        let components = suffix.split(separator: " ", maxSplits: 1).map(String.init)
+        let weekdays = components.first?.compactMap { character -> String? in
+            switch character {
+            case "一": return "Mon"
+            case "二": return "Tue"
+            case "三": return "Wed"
+            case "四": return "Thu"
+            case "五": return "Fri"
+            case "六": return "Sat"
+            case "日": return "Sun"
+            default: return nil
+            }
+        }.joined(separator: "/") ?? "Weekly"
+        return [weekdays.isEmpty ? "Weekly" : weekdays, components.count > 1 ? components[1] : nil]
+            .compactMap { $0 }
+            .joined(separator: " ")
+    }
+    if detail.hasPrefix("每 "), detail.hasSuffix(" 分钟") {
+        return detail
+            .replacingOccurrences(of: "每 ", with: "Every ")
+            .replacingOccurrences(of: " 分钟", with: " minutes")
+    }
     return detail
-        .replacingOccurrences(of: "每天", with: "Daily")
-        .replacingOccurrences(of: "每周", with: "Weekly")
         .replacingOccurrences(of: "每小时", with: "Hourly")
+        .replacingOccurrences(of: "每分钟", with: "Every minute")
+        .replacingOccurrences(of: "定时", with: "Scheduled")
 }
 
 private func localizedTaskState(_ item: TaskItem, language: WidgetLanguage) -> String {
-    if item.kind == .scheduled { return item.chip }
-    if item.kind == .done, item.runtimeState == .recorded {
-        return language.text("已完成", "Done")
-    }
-    switch item.runtimeState {
-    case .recorded:
-        if item.kind == .active {
-            return language.text("最近活跃", "Recently active")
-        }
-        return item.isRealtime ? language.text("实时", "Live") : language.text("记录", "Recorded")
-    case .idle:
-        return language.text("空闲", "Idle")
+    switch item.displayState {
+    case .recentlyActive:
+        return language.text("最近活跃", "Recently active")
+    case .continueLater:
+        return language.text("待继续", "To continue")
+    case .scheduled:
+        return item.sourceKind == .claudeTask
+            ? language.text("计划中", "Planned")
+            : language.text("定时", "Scheduled")
+    case .archived:
+        return language.text("今日归档", "Archived today")
     case .running:
-        return language.text("执行中", "Running")
-    case .waitingInput:
-        return language.text("等待回答", "Needs input")
+        return language.text("进行中", "Running")
+    case .pending:
+        return language.text("待处理", "Pending")
     case .failed:
         return language.text("失败", "Failed")
+    case .blocked:
+        return language.text("阻塞", "Blocked")
     case .completed:
         return language.text("已完成", "Completed")
-    case .interrupted:
-        return language.text("已中断", "Interrupted")
-    case .disconnected:
-        return language.text("连接断开", "Disconnected")
+    case .unknown:
+        return language.text("状态未知", "Unknown status")
+    }
+}
+
+private func localizedTaskStateBasis(_ basis: TaskStateBasis, language: WidgetLanguage) -> String {
+    switch basis {
+    case .activityWindow:
+        return language.text(
+            "依据：本机 Codex Session 最近 2 小时活动时间。",
+            "Basis: local Codex session activity in the last 2 hours."
+        )
+    case .archive:
+        return language.text(
+            "依据：本机 Codex Session 今天已归档；不代表成功。",
+            "Basis: the local Codex session was archived today; this does not imply success."
+        )
+    case .scheduleConfig:
+        return language.text(
+            "依据：本机已启用的 automation 配置。",
+            "Basis: an enabled local automation configuration."
+        )
+    case .explicit:
+        return language.text(
+            "依据：本机 Claude Code task 状态。",
+            "Basis: the local Claude Code task status."
+        )
+    }
+}
+
+private func localizedTaskTime(_ item: TaskItem, language: WidgetLanguage) -> String? {
+    if let nextRunAt = item.nextRunAt {
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: language.isChinese ? "zh_CN" : "en_US_POSIX")
+        if calendar.isDateInToday(nextRunAt) {
+            formatter.dateFormat = "HH:mm"
+            return language.text("下次 今天 \(formatter.string(from: nextRunAt))", "Next today \(formatter.string(from: nextRunAt))")
+        }
+        let currentYear = calendar.component(.year, from: Date())
+        formatter.dateFormat = calendar.component(.year, from: nextRunAt) == currentYear
+            ? "M/d HH:mm"
+            : "yyyy/M/d HH:mm"
+        return language.text("下次 \(formatter.string(from: nextRunAt))", "Next \(formatter.string(from: nextRunAt))")
+    }
+
+    guard let updatedAt = item.updatedAt else { return nil }
+    let relative = relativeTimeText(updatedAt, language: language)
+    switch item.stateBasis {
+    case .activityWindow:
+        return language.text("活动 \(relative)", "Active \(relative)")
+    case .archive:
+        return language.text("归档 \(relative)", "Archived \(relative)")
+    case .explicit:
+        return language.text("更新 \(relative)", "Updated \(relative)")
+    case .scheduleConfig:
+        return nil
     }
 }
 
@@ -9204,15 +9360,6 @@ private func localizedReaderMessage(_ message: String, language: WidgetLanguage)
     }
     if message.contains("app-server") { return message.replacingOccurrences(of: "未知错误", with: "Unknown error") }
     return message
-}
-
-private func taskAvatarText(_ item: TaskItem) -> String {
-    if item.code.hasPrefix("AUTO") { return "B" }
-    let source = item.detail.split(separator: "·").first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    if let first = source.first {
-        return String(first).uppercased()
-    }
-    return "C"
 }
 
 private func timeOnly(_ date: Date, language: WidgetLanguage = .zh) -> String {

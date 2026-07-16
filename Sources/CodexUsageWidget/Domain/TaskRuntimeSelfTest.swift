@@ -193,6 +193,30 @@ enum TaskRuntimeSelfTest {
         ])
         expect(attention?.id == "input", "user input must outrank failure and update")
 
+        let waitingItem = TaskItem(
+            id: "waiting-thread",
+            code: "COD-WAIT",
+            title: "Waiting task",
+            detail: "",
+            chip: "recentlyActive",
+            updatedAt: now,
+            tokens: nil,
+            kind: .active,
+            threadID: "waiting-thread",
+            runtimeState: .waitingInput,
+            isRealtime: true,
+            sourceKind: .codexThread,
+            displayState: .recentlyActive,
+            stateBasis: .activityWindow
+        )
+        let waitingBoard = TaskBoard(refreshedAt: now, columns: [
+            TaskColumn(id: .active, title: "Recent", count: 1, items: [waitingItem])
+        ])
+        expect(
+            waitingBoard.attentionItems(scope: .codex).isEmpty,
+            "waiting-input live state must not be exposed as a product attention item"
+        )
+
         if failures.isEmpty {
             print("task runtime self-test passed")
             return true

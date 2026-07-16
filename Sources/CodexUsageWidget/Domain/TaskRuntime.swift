@@ -266,17 +266,6 @@ enum TaskRuntimeState: String, Equatable {
     case interrupted
     case disconnected
 
-    var attentionRank: Int? {
-        switch self {
-        case .waitingInput:
-            return 0
-        case .failed:
-            return 1
-        case .recorded, .idle, .running, .completed, .interrupted, .disconnected:
-            return nil
-        }
-    }
-
     var columnKind: TaskColumnKind {
         switch self {
         case .running, .waitingInput:
@@ -630,10 +619,16 @@ extension TaskBoard {
         let threadItems = Array(itemsByThread.values)
         func sorted(_ kind: TaskColumnKind) -> [TaskItem] {
             threadItems.filter { $0.kind == kind }.sorted { lhs, rhs in
-                let leftRank = lhs.runtimeState.attentionRank ?? Int.max
-                let rightRank = rhs.runtimeState.attentionRank ?? Int.max
-                if leftRank != rightRank { return leftRank < rightRank }
-                return (lhs.updatedAt ?? .distantPast) > (rhs.updatedAt ?? .distantPast)
+                switch (lhs.updatedAt, rhs.updatedAt) {
+                case let (left?, right?) where left != right:
+                    return left > right
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                default:
+                    return lhs.id < rhs.id
+                }
             }
         }
 
@@ -641,7 +636,19 @@ extension TaskBoard {
         let active = sorted(.active)
         let pending = sorted(.pending)
         let done = sorted(.done)
-        let scheduled = scheduledItems.sorted { $0.title < $1.title }
+        let scheduled = scheduledItems.sorted { lhs, rhs in
+            switch (lhs.nextRunAt, rhs.nextRunAt) {
+            case let (left?, right?) where left != right:
+                return left < right
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                if lhs.title != rhs.title { return lhs.title < rhs.title }
+                return lhs.id < rhs.id
+            }
+        }
 
         return TaskBoard(refreshedAt: now, columns: [
             TaskColumn(id: .active, title: titles[.active] ?? "Active", count: active.count, items: active),
@@ -656,7 +663,7 @@ extension TaskBoard {
             let kind: TaskAttentionKind
             switch item.runtimeState {
             case .waitingInput:
-                kind = .userInput
+                return nil
             case .failed:
                 kind = .failure
             default:
