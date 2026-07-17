@@ -1,9 +1,9 @@
 # GPTcodex_U
 
 > [!IMPORTANT]
-> **建议升级到 v1.1.4 或更高版本。** v1.1.4 修复 app-server 长连接等待凑满 64 KiB 才返回、导致 Codex 账户与额度读取超时的问题；额度和任务流现在使用有背压的 POSIX 部分读取，并保留缓冲、超时和进程清理边界。[下载最新版本](https://github.com/shanggqm/codexU/releases/latest)。
+> **当前定制版为 v1.2.0。** 此版本统一使用 Codex 官方账户用量口径，补充当天实时估算，优化菜单栏额度进度条与中文数量单位，并启用全新的 `GPTcodex_U` 图标和名称。[下载最新版本](https://github.com/suren-00/GPTcodex_U/releases/latest)。
 
-[产品官网](https://shanggqm.github.io/codexU-site/) · [下载最新版本](https://github.com/shanggqm/codexU/releases/latest) · [English](README.en.md)
+[下载最新版本](https://github.com/suren-00/GPTcodex_U/releases/latest) · [上游项目](https://github.com/shanggqm/codexU) · [English](README.en.md)
 
 GPTcodex_U（原 codexU）是一个 macOS 菜单栏与桌面应用，用来查看 OpenAI Codex / ChatGPT Codex 和 Claude Code 的额度窗口、token 用量和今日任务状态。它把常用信息放在菜单栏和主窗口里，帮助你快速判断剩余额度、重置时间和当天工作进展。
 
@@ -86,12 +86,12 @@ API 等效价值 =
 
 codexU 目前通过 GitHub Release 的 DMG 安装包分发，不经过 Mac App Store。第一次打开时，macOS 可能会拦截，需要手动允许：
 
-1. 打开 `codexU.app` 一次。如果系统提示无法打开，先取消弹窗。
+1. 打开 `GPTcodex_U.app` 一次。如果系统提示无法打开，先取消弹窗。
 2. 打开 **系统设置 > 隐私与安全性**。
-3. 在 **安全性** 区域找到 `codexU.app`，点击 **仍要打开**。
+3. 在 **安全性** 区域找到 `GPTcodex_U.app`，点击 **仍要打开**。
 4. 使用 Touch ID 或密码确认，然后点击 **打开**。
 
-也可以在 Finder 中右键点击 `codexU.app`，选择 **打开**，再确认系统安全提示。
+也可以在 Finder 中右键点击 `GPTcodex_U.app`，选择 **打开**，再确认系统安全提示。
 
 codexU 需要读取本机 `~/.codex/` 下的 Codex 数据；如果启用 Claude Code 统计，还会读取 `~/.claude/` 下的本机 transcript、任务和状态缓存。如果 macOS 弹出文件或文件夹访问授权，请允许访问，否则小组件无法读取本机 usage、线程和自动化任务信息。
 
@@ -99,11 +99,11 @@ codexU 需要读取本机 `~/.codex/` 下的 Codex 数据；如果启用 Claude 
 
 从 GitHub Release 下载与你的 Mac 芯片匹配的安装包：
 
-- Apple Silicon：`codexU-<version>-mac-arm64.dmg`
-- Intel：`codexU-<version>-mac-x86_64.dmg`
+- Apple Silicon：`GPTcodex_U-<version>-mac-arm64.dmg`
+- Intel：`GPTcodex_U-<version>-mac-x86_64.dmg`
 
 1. 打开 DMG。
-2. 将 `codexU.app` 拖到 `Applications` 文件夹。
+2. 将 `GPTcodex_U.app` 拖到 `Applications` 文件夹。
 3. 从 `Applications` 打开 codexU。
 4. 按上面的 **首次安装：隐私与安全** 步骤完成手动放行。
 
@@ -159,10 +159,10 @@ make release-all
 产物会写入 `dist/`，例如：
 
 ```text
-dist/codexU-1.1.4-mac-arm64.dmg
-dist/codexU-1.1.4-mac-arm64.dmg.sha256
-dist/codexU-1.1.4-mac-x86_64.dmg
-dist/codexU-1.1.4-mac-x86_64.dmg.sha256
+dist/GPTcodex_U-1.2.0-mac-arm64.dmg
+dist/GPTcodex_U-1.2.0-mac-arm64.dmg.sha256
+dist/GPTcodex_U-1.2.0-mac-x86_64.dmg
+dist/GPTcodex_U-1.2.0-mac-x86_64.dmg.sha256
 ```
 
 Developer ID 签名和 Apple notarization 流程见 [DISTRIBUTION.md](DISTRIBUTION.md)。
@@ -179,7 +179,7 @@ Developer ID 签名和 Apple notarization 流程见 [DISTRIBUTION.md](DISTRIBUTI
 - Claude Code 历史 token：`~/.claude/projects/**/*.jsonl` 中 assistant message 的 `message.usage` 字段。
 - Claude Code 工具、Skill 和任务：transcript 中的 `tool_use.name` / 显式 Skill attribution，以及 `~/.claude/tasks/**/*.json`；Skill 路径缺失时按 Claude Code 的个人、项目、嵌套、插件和旧版 command 路径在当前文件系统中回退推断，无法确认时显示“当前未定位”。
 - Claude Code active 额度：可选读取 `~/Library/Caches/codexU/claude-code/statusline-snapshot.json`；缺失时 5 小时/7 日额度显示为 `--`。
-- 更新检测：默认访问 GitHub Releases API，读取 `shanggqm/codexU` 的公开 release 元数据，并把检查结果缓存到 `~/Library/Caches/codexU/update-check.json`。
+- 更新检测：默认访问 GitHub Releases API，读取 `suren-00/GPTcodex_U` 的公开 release 元数据，并把检查结果缓存到 `~/Library/Caches/codexU/update-check.json`。
 
 当前 Codex 额度 API 暴露的是滚动窗口百分比和重置时间，不暴露绝对配额数量；Claude Code 首版只读取本地历史记录和可选 active snapshot，不代表 Claude.ai 官方账单。更完整的数据口径和回退策略见 [RESEARCH.md](RESEARCH.md)。
 
@@ -199,7 +199,7 @@ Developer ID 签名和 Apple notarization 流程见 [DISTRIBUTION.md](DISTRIBUTI
 
 ### 支持 Intel Mac 吗？
 
-支持。Intel Mac 下载 `codexU-<version>-mac-x86_64.dmg`。从源码打包时使用 `make release-intel`，或在支持对应 target 的机器上使用 `TARGET_TRIPLE="x86_64-apple-macos13.0"`。
+支持。Intel Mac 下载 `GPTcodex_U-<version>-mac-x86_64.dmg`。从源码打包时使用 `make release-intel`，或在支持对应 target 的机器上使用 `TARGET_TRIPLE="x86_64-apple-macos13.0"`。
 
 ## License
 

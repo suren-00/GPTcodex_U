@@ -3,4 +3,4 @@ set -eu
 
 cd "$(dirname "$0")/.."
 make build
-"build/codexU.app/Contents/MacOS/codexU" --self-test-palettes
+"build/GPTcodex_U.app/Contents/MacOS/codexU" --self-test-palettes

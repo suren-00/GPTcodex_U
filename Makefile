@@ -1,4 +1,5 @@
-APP_NAME := codexU
+APP_NAME := GPTcodex_U
+EXECUTABLE_NAME := codexU
 DISPLAY_NAME := GPTcodex_U
 INSTALL_APP_NAME := GPTcodex_U
 VERSION := $(shell /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist 2>/dev/null || echo 0.1.0)
@@ -44,7 +45,7 @@ build:
 	cp -R Resources/Palettes "$(RESOURCES_DIR)/Palettes"
 	/usr/bin/xattr -dr com.apple.quarantine "$(APP_DIR)" 2>/dev/null || true
 	MACOSX_DEPLOYMENT_TARGET="$(DEPLOYMENT_TARGET)" swiftc -O -parse-as-library $(SWIFTC_TARGET_FLAGS) $(SWIFTC_FEATURE_FLAGS) $(SOURCES) \
-		-o "$(MACOS_DIR)/$(APP_NAME)" \
+		-o "$(MACOS_DIR)/$(EXECUTABLE_NAME)" \
 		-framework Cocoa \
 		-framework Carbon \
 		-framework SwiftUI
@@ -55,7 +56,7 @@ run: build
 	open "$(APP_DIR)"
 
 probe: build
-	"$(MACOS_DIR)/$(APP_NAME)" --dump-json
+	"$(MACOS_DIR)/$(EXECUTABLE_NAME)" --dump-json
 
 test-rate-limits:
 	./scripts/test-rate-limits.sh
@@ -64,25 +65,25 @@ test-statistics-time-zone:
 	./scripts/test-statistics-time-zone.sh
 
 test-token-counter: build
-	"$(MACOS_DIR)/$(APP_NAME)" --self-test-token-counter
+	"$(MACOS_DIR)/$(EXECUTABLE_NAME)" --self-test-token-counter
 
 test-app-server-pipe: build
-	"$(MACOS_DIR)/$(APP_NAME)" --self-test-app-server-pipe
+	"$(MACOS_DIR)/$(EXECUTABLE_NAME)" --self-test-app-server-pipe
 
 test-task-runtime: build
-	"$(MACOS_DIR)/$(APP_NAME)" --self-test-task-runtime
+	"$(MACOS_DIR)/$(EXECUTABLE_NAME)" --self-test-task-runtime
 
 test-claude-skill-paths: build
-	"$(MACOS_DIR)/$(APP_NAME)" --self-test-claude-skill-paths
+	"$(MACOS_DIR)/$(EXECUTABLE_NAME)" --self-test-claude-skill-paths
 
 test-codex-session-link: build
-	"$(MACOS_DIR)/$(APP_NAME)" --self-test-codex-session-link
+	"$(MACOS_DIR)/$(EXECUTABLE_NAME)" --self-test-codex-session-link
 
 test-performance-monitor: build
-	"$(MACOS_DIR)/$(APP_NAME)" --self-test-performance-monitor
+	"$(MACOS_DIR)/$(EXECUTABLE_NAME)" --self-test-performance-monitor
 
 test-phase-one-gate: build
-	"$(MACOS_DIR)/$(APP_NAME)" --self-test-phase-one-gate
+	"$(MACOS_DIR)/$(EXECUTABLE_NAME)" --self-test-phase-one-gate
 
 test-macos-compatibility:
 	./scripts/test-macos-compatibility.sh
@@ -162,7 +163,7 @@ notarize: dmg
 	./scripts/notarize-dmg.sh
 
 verify: build
-	file "$(MACOS_DIR)/$(APP_NAME)"
+	file "$(MACOS_DIR)/$(EXECUTABLE_NAME)"
 	codesign -dv --verbose=4 "$(APP_DIR)"
 
 clean:

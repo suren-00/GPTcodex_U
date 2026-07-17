@@ -18,14 +18,14 @@ git diff --check
 
 make test-macos-compatibility
 make build >/dev/null
-build/codexU.app/Contents/MacOS/codexU --self-test-statistics-time-zone
-build/codexU.app/Contents/MacOS/codexU --self-test-token-counter
-build/codexU.app/Contents/MacOS/codexU --self-test-app-server-pipe
-build/codexU.app/Contents/MacOS/codexU --self-test-claude-skill-paths
-build/codexU.app/Contents/MacOS/codexU --self-test-status-item
-build/codexU.app/Contents/MacOS/codexU --self-test-rate-limits
-build/codexU.app/Contents/MacOS/codexU --self-test-particle-animation
-build/codexU.app/Contents/MacOS/codexU --self-test-updates
+build/GPTcodex_U.app/Contents/MacOS/codexU --self-test-statistics-time-zone
+build/GPTcodex_U.app/Contents/MacOS/codexU --self-test-token-counter
+build/GPTcodex_U.app/Contents/MacOS/codexU --self-test-app-server-pipe
+build/GPTcodex_U.app/Contents/MacOS/codexU --self-test-claude-skill-paths
+build/GPTcodex_U.app/Contents/MacOS/codexU --self-test-status-item
+build/GPTcodex_U.app/Contents/MacOS/codexU --self-test-rate-limits
+build/GPTcodex_U.app/Contents/MacOS/codexU --self-test-particle-animation
+build/GPTcodex_U.app/Contents/MacOS/codexU --self-test-updates
 ./scripts/test-parsers.sh
 
 make release-all
@@ -33,7 +33,7 @@ make release-all
 verify_asset() {
   local arch="$1"
   local expected_arch="$2"
-  local dmg="dist/codexU-${VERSION}-mac-${arch}.dmg"
+  local dmg="dist/GPTcodex_U-${VERSION}-mac-${arch}.dmg"
   local checksum="${dmg}.sha256"
   local mount_dir
 
@@ -44,8 +44,8 @@ verify_asset() {
 
   mount_dir="$(mktemp -d)"
   hdiutil attach -nobrowse -readonly -mountpoint "$mount_dir" "$dmg" >/dev/null
-  file "$mount_dir/codexU.app/Contents/MacOS/codexU" | grep -q "$expected_arch"
-  codesign --verify --deep --strict "$mount_dir/codexU.app"
+  file "$mount_dir/GPTcodex_U.app/Contents/MacOS/codexU" | grep -q "$expected_arch"
+  codesign --verify --deep --strict "$mount_dir/GPTcodex_U.app"
   hdiutil detach "$mount_dir" >/dev/null
   rmdir "$mount_dir"
 }
@@ -53,6 +53,6 @@ verify_asset() {
 verify_asset arm64 arm64
 verify_asset x86_64 x86_64
 
-echo "Release artifacts verified for codexU $VERSION"
-cat "dist/codexU-${VERSION}-mac-arm64.dmg.sha256"
-cat "dist/codexU-${VERSION}-mac-x86_64.dmg.sha256"
+echo "Release artifacts verified for GPTcodex_U $VERSION"
+cat "dist/GPTcodex_U-${VERSION}-mac-arm64.dmg.sha256"
+cat "dist/GPTcodex_U-${VERSION}-mac-x86_64.dmg.sha256"
