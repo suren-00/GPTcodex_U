@@ -224,39 +224,29 @@ struct StatusItemRenderer {
         )
 
         let barRect = StatusItemLayoutMetrics.richSingleQuotaBarRect
-        let fillPath = drawLinearProgress(
+        drawLinearProgress(
             in: barRect,
             fraction: metric.fraction,
             role: metric.paletteRole,
             quotaMode: quotaMode,
             tokens: tokens
         )
-        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: 8.6, weight: .bold)
-        let valueColor = metric.isAvailable ? primaryTextColor : mutedTextColor
+        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: 9.8, weight: .heavy)
+        let valueRect = NSRect(x: barRect.midX - 16, y: barRect.minY + 0.75, width: 32, height: 11.5)
         drawText(
             metric.value,
-            in: NSRect(x: barRect.minX, y: 5.2, width: barRect.width, height: 11),
+            in: NSRect(x: valueRect.minX, y: 5.6, width: valueRect.width, height: 12),
             font: valueFont,
-            color: valueColor,
+            color: metric.isAvailable ? NSColor.black.withAlphaComponent(0.62) : mutedTextColor,
             alignment: .center
         )
-
-        // The progress palette is appearance-independent. Repaint the part of
-        // the label over the filled segment with dark ink, while the unfilled
-        // part keeps the system label color. This remains legible in both Aqua
-        // appearances and when the progress boundary crosses the glyphs.
-        if metric.isAvailable, let fillPath {
-            NSGraphicsContext.saveGraphicsState()
-            fillPath.addClip()
-            drawText(
-                metric.value,
-                in: NSRect(x: barRect.minX, y: 5.2, width: barRect.width, height: 11),
-                font: valueFont,
-                color: NSColor.black.withAlphaComponent(0.88),
-                alignment: .center
-            )
-            NSGraphicsContext.restoreGraphicsState()
-        }
+        drawText(
+            metric.value,
+            in: NSRect(x: valueRect.minX, y: 5.0, width: valueRect.width, height: 12),
+            font: valueFont,
+            color: metric.isAvailable ? NSColor.white.withAlphaComponent(0.98) : mutedTextColor,
+            alignment: .center
+        )
 
         if showsReset, let resetText = metric.resetText {
             drawResetCountdown(
@@ -310,7 +300,7 @@ struct StatusItemRenderer {
     private func drawResetCountdown(_ text: String, in rect: NSRect) {
         let font = NSFont.monospacedDigitSystemFont(
             ofSize: StatusItemLayoutMetrics.richResetFontSize,
-            weight: .medium
+            weight: .semibold
         )
         let textWidth = ceil((text as NSString).size(withAttributes: [.font: font]).width)
         let iconSide = StatusItemLayoutMetrics.richResetIconSide
@@ -449,7 +439,10 @@ struct StatusItemRenderer {
         quotaMode: QuotaDisplayMode,
         tokens: ResolvedVisualTokens
     ) -> NSBezierPath? {
-        trackColor.setFill()
+        let linearTrackColor = fraction == nil
+            ? trackColor
+            : NSColor.white.withAlphaComponent(0.28)
+        linearTrackColor.setFill()
         NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
 
         guard let fraction else { return nil }
@@ -464,34 +457,10 @@ struct StatusItemRenderer {
             xRadius: fillRadius,
             yRadius: fillRadius
         )
-        let palette = StatusItemQuotaPalette.palette(for: role, tokens: tokens)
-        guard let context = NSGraphicsContext.current?.cgContext,
-              let gradient = CGGradient(
-                colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                colors: [palette.start.cgColor, palette.end.cgColor] as CFArray,
-                locations: [0, 1]
-              )
-        else {
-            palette.end.setFill()
-            fillPath.fill()
-            return fillPath
-        }
-
-        context.saveGState()
-        fillPath.addClip()
-        context.drawLinearGradient(
-            gradient,
-            start: CGPoint(
-                x: quotaMode.startsAtLeadingEdge ? rect.minX : rect.maxX,
-                y: rect.midY
-            ),
-            end: CGPoint(
-                x: quotaMode.startsAtLeadingEdge ? rect.maxX : rect.minX,
-                y: rect.midY
-            ),
-            options: []
-        )
-        context.restoreGState()
+        let progressGreen = NSColor.systemGreen.blended(withFraction: 0.22, of: .black)
+            ?? NSColor.systemGreen
+        progressGreen.withAlphaComponent(0.97).setFill()
+        fillPath.fill()
         return fillPath
     }
 
@@ -532,7 +501,8 @@ struct StatusItemRenderer {
 
     private func drawRuntimeLogo(_ scope: RuntimeScope, in rect: NSRect) {
         if let template = runtimeTemplate(for: scope) {
-            tintedImage(template, color: primaryTextColor, size: rect.size)
+            let tintColor = scope == .codex ? NSColor.white : primaryTextColor
+            tintedImage(template, color: tintColor, size: rect.size)
                 .draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
             return
         }

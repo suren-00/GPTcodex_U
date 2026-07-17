@@ -1,5 +1,6 @@
 APP_NAME := codexU
-DISPLAY_NAME := codexU
+DISPLAY_NAME := GPTcodex_U
+INSTALL_APP_NAME := GPTcodex_U
 VERSION := $(shell /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist 2>/dev/null || echo 0.1.0)
 BUILD_DIR := build
 DIST_DIR := dist
@@ -102,9 +103,9 @@ phase-one-soak: build
 	./scripts/phase-one-soak.sh
 
 install: build
-	rm -rf "/Applications/$(APP_NAME).app"
-	cp -R "$(APP_DIR)" "/Applications/$(APP_NAME).app"
-	open "/Applications/$(APP_NAME).app"
+	rm -rf "/Applications/$(INSTALL_APP_NAME).app"
+	cp -R "$(APP_DIR)" "/Applications/$(INSTALL_APP_NAME).app"
+	open "/Applications/$(INSTALL_APP_NAME).app"
 
 dmg: build
 	APP_NAME="$(APP_NAME)" \

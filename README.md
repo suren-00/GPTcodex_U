@@ -1,11 +1,11 @@
-# codexU
+# GPTcodex_U
 
 > [!IMPORTANT]
 > **建议升级到 v1.1.4 或更高版本。** v1.1.4 修复 app-server 长连接等待凑满 64 KiB 才返回、导致 Codex 账户与额度读取超时的问题；额度和任务流现在使用有背压的 POSIX 部分读取，并保留缓冲、超时和进程清理边界。[下载最新版本](https://github.com/shanggqm/codexU/releases/latest)。
 
 [产品官网](https://shanggqm.github.io/codexU-site/) · [下载最新版本](https://github.com/shanggqm/codexU/releases/latest) · [English](README.en.md)
 
-codexU 是一个 macOS 菜单栏与桌面应用，用来查看 OpenAI Codex / ChatGPT Codex 和 Claude Code 的额度窗口、token 用量和今日任务状态。它把常用信息放在菜单栏和主窗口里，帮助你快速判断剩余额度、重置时间和当天工作进展。
+GPTcodex_U（原 codexU）是一个 macOS 菜单栏与桌面应用，用来查看 OpenAI Codex / ChatGPT Codex 和 Claude Code 的额度窗口、token 用量和今日任务状态。它把常用信息放在菜单栏和主窗口里，帮助你快速判断剩余额度、重置时间和当天工作进展。
 
 ## 界面截图
 
@@ -35,13 +35,13 @@ codexU 是一个 macOS 菜单栏与桌面应用，用来查看 OpenAI Codex / Ch
 - 状态栏支持简约、经典、丰富三档透明显示：简约保留加粗额度环，经典在独立进度环内显示额度数字，丰富展示完整标签、进度条和重置时间；只有一个有效额度窗口时会自动收敛为单额度布局。
 - 环形额度保留完整粒子效果；默认只在主窗口可见、置前且聚焦时渲染，省电模式只在鼠标悬停额度环时渲染，后台、低电量、温控或“减少动态效果”状态下自动停用。
 - 状态栏额度可切换“已用量 / 剩余量”口径，并可选择显示 5 小时、7 天或月额度、今日 token 和重置倒计时；5h/7d/月 进度色与主界面蓝紫双环一致。Team 账号的月额度窗口（如 43800 分钟）会正确归类并显示，不再提示未识别。
-- 状态栏用进度方向区分口径：已用为顺时针/左到右，剩余为逆时针/右到左，不额外占用文字空间。
+- 状态栏用环形方向区分口径：已用为顺时针，剩余为逆时针；线性进度条统一从左到右填充，便于扫视。
 - 状态栏 Runtime 使用从原始 Logo 精确派生的单色模板，文字与图标按菜单栏实际深浅自动切换黑白；彩色品牌图标继续用于主窗口和浮窗。
 - 今日总 token 在状态栏中只显示垂直居中的总量数字，不增加 `T` 标签。
 - 今日总量使用系统菜单栏正文尺寸；5h/7d 标签与重置时间使用更易读、仍弱于主数值的动态辅助前景色。
 - 主界面顶部新增 `Codex | Claude Code` 全局开关，可手动切换所有面板的数据范围。
 - 支持 Claude Code 本机 transcript 用量统计、最近 7 日趋势、项目排行、工具/Skill TOP 和任务看板基础能力。
-- 汇总今日、近 7 天和累计 token 用量，并细分未缓存输入、命中缓存输入和输出。
+- 汇总今日、近 7 天和累计 token 用量，并细分未缓存输入、命中缓存输入和输出；数量按“万 / 亿”显示，API 等效金额保留直接数字而不使用 K/M 缩写。
 - 按 OpenAI API token 价格估算本月 API 等效价值，并在 Plus、Pro 100、Pro 200 和满额月价值之间展示进度刻度。
 - 下方仪表盘支持今日任务、用量趋势、项目排行和 Skill 使用视图。
 - 今日任务按事实源自适应组织：Codex 使用“最近活跃、待继续、定时、今日归档”，Claude Code 使用本机 task 的“进行中、待处理、计划中、已完成”；近期活动与归档都不会被包装成仍在执行或成功完成。
@@ -173,7 +173,7 @@ Developer ID 签名和 Apple notarization 流程见 [DISTRIBUTION.md](DISTRIBUTI
 - 本机 token 总量：`~/.codex/state_5.sqlite`。
 - 精细 token 拆分：`~/.codex/sessions/**/rollout-*.jsonl` 和 `~/.codex/archived_sessions/*.jsonl` 中的 `token_count` 事件。
 - 今日任务看板：本机 SQLite 中未归档和今日归档的 Codex 线程；两小时活动窗口只表达“最近活跃”，归档只表达记录归档，不代表运行或成功。
-- 用量趋势和项目排行：本机 session `token_count` 事件聚合；缺失精细事件时回退到线程更新时间的粗略口径。
+- Token 总量和历史每日趋势：Codex app-server 的官方账户用量；官方当天数据未发布时，以本机 session `token_count` 事件实时补齐今日用量。未缓存、缓存、输出和金额拆分使用本机事件估算。项目排行缺失精细事件时回退到线程更新时间的粗略口径，并排除 subagent 重复计数。
 - 工具和 Skill 使用：本机 session 事件中的工具调用与 Skill 加载记录。
 - 定时任务：`~/.codex/automations/**/automation.toml` 中启用的 automation 元数据；周期、时区和时间足够明确时在本机计算下次运行，规则不完整时不猜测。
 - Claude Code 历史 token：`~/.claude/projects/**/*.jsonl` 中 assistant message 的 `message.usage` 字段。

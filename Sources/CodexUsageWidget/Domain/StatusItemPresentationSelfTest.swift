@@ -11,13 +11,15 @@ enum StatusItemPresentationSelfTest {
         }
 
         expect(TokenFormatter.format(nil) == "--", "missing tokens should remain unavailable")
-        expect(TokenFormatter.format(999) == "999", "sub-thousand tokens should remain unabridged")
-        expect(TokenFormatter.format(1_000) == "1.0K", "thousands should use K")
-        expect(TokenFormatter.format(999_949) == "999.9K", "values below the rounded boundary should stay in K")
-        expect(TokenFormatter.format(999_950) == "1.0M", "rounded K boundary should promote to M")
-        expect(TokenFormatter.format(999_999_999) == "1.0B", "rounded M boundary should promote to B")
-        expect(TokenFormatter.format(1_234_567_890) == "1.2B", "billions should use B")
-        expect(TokenFormatter.format(-1_234_567) == "-1.2M", "negative values should preserve their sign")
+        expect(TokenFormatter.format(9_999) == "9999", "sub-wan tokens should remain unabridged")
+        expect(TokenFormatter.format(10_000) == "1万", "ten thousand tokens should use 万")
+        expect(TokenFormatter.format(1_234_567) == "123.5万", "wan values should retain useful precision")
+        expect(TokenFormatter.format(18_400_000) == "1840万", "four-digit wan values should remain compact")
+        expect(TokenFormatter.format(99_994_999) == "9999万", "values below the rounded yi boundary should stay in 万")
+        expect(TokenFormatter.format(99_995_000) == "1亿", "rounded wan boundary should promote to 亿")
+        expect(TokenFormatter.format(123_450_000) == "1.2亿", "hundred-million values should use 亿")
+        expect(TokenFormatter.format(1_649_034_422) == "16.5亿", "billion-scale values should remain in 亿")
+        expect(TokenFormatter.format(-1_234_567) == "-123.5万", "negative values should preserve their sign")
 
         let suiteName = "codexU.status-item-self-test.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
@@ -33,7 +35,7 @@ enum StatusItemPresentationSelfTest {
         expect(QuotaDisplayMode.used.drawsClockwise, "used quota should draw clockwise")
         expect(!QuotaDisplayMode.remaining.drawsClockwise, "remaining quota should draw counterclockwise")
         expect(QuotaDisplayMode.used.startsAtLeadingEdge, "used linear bar should start at the leading edge")
-        expect(!QuotaDisplayMode.remaining.startsAtLeadingEdge, "remaining linear bar should start at the trailing edge")
+        expect(QuotaDisplayMode.remaining.startsAtLeadingEdge, "remaining linear bar should start at the leading edge")
 
         defaults.set(
             [StatusItemMetric.fiveHourQuota.rawValue, StatusItemMetric.sevenDayQuota.rawValue],
@@ -109,7 +111,7 @@ enum StatusItemPresentationSelfTest {
         expect(usedSevenDay?.paletteRole == .secondary, "7d should use the main purple ring palette")
         expect(usedFiveHour?.resetText == "1h", "reset countdown should use injected time")
         expect(usedSevenDay?.resetText == "1d", "long reset countdown should prefer days")
-        expect(used.todayMetric?.value == "1.2M", "today tokens should use compact formatting")
+        expect(used.todayMetric?.value == "123.5万", "today tokens should use Chinese compact formatting")
         expect(used.tooltip.contains("used"), "English tooltip should name the quota direction")
         expect(used.tooltip.contains("resets in 1 hour"), "English tooltip should explain the reset countdown")
         expect(used.accessibilityValue.contains("resets in 1 day"), "VoiceOver should explain day-based resets")
@@ -343,7 +345,7 @@ enum StatusItemPresentationSelfTest {
             ofSize: StatusItemLayoutMetrics.todayTokenFontSize,
             weight: .semibold
         )
-        let maximumTokenWidth = ("999.9M" as NSString).size(withAttributes: [.font: todayTokenFont]).width
+        let maximumTokenWidth = ("9999万" as NSString).size(withAttributes: [.font: todayTokenFont]).width
         expect(
             maximumTokenWidth <= StatusItemLayoutMetrics.classicTokenUnitWidth - 4,
             "menu bar body-sized token text should fit its fixed classic slot"
@@ -393,7 +395,7 @@ enum StatusItemPresentationSelfTest {
         expect(singleClassic.itemLength == 55, "classic single-quota item should use the compact 55pt width")
 
         let rich = builder.build(source: source, preferences: .default, language: .en, now: now)
-        expect(rich.itemLength <= 134, "default rich item should stay compact after adding reset semantics")
+        expect(rich.itemLength <= 149, "default rich item should stay compact after lengthening the quota and reset slots")
         expect(rich.quotaMetrics.count == 2, "rich mode should keep two rows when both quotas exist")
 
         let singleRich = builder.build(
@@ -405,11 +407,11 @@ enum StatusItemPresentationSelfTest {
         expect(singleRich.quotaMetrics.count == 1, "rich mode should use its single-quota layout")
         expect(singleRich.itemLength == rich.itemLength, "rich single-quota layout should keep a stable menu width")
         expect(
-            StatusItemLayoutMetrics.richSingleQuotaBarRect.width == 49
+            StatusItemLayoutMetrics.richSingleQuotaBarRect.width == 60
                 && StatusItemLayoutMetrics.richSingleQuotaBarRect.height == 13
                 && StatusItemLayoutMetrics.richSingleQuotaBarRect.midY
                     == StatusItemLayoutMetrics.imageHeight / 2,
-            "rich single-quota percentage bar should be a centered 49x13 capsule"
+            "rich single-quota percentage bar should be a centered 60x13 capsule"
         )
         expect(
             StatusItemLayoutMetrics.richSingleQuotaResetRect.midY
@@ -478,6 +480,54 @@ enum StatusItemPresentationSelfTest {
             }
         } else {
             failures.append("single rich status item render should produce a readable bitmap")
+        }
+
+        var remainingTrackPreferences = StatusItemPreferences.default
+        remainingTrackPreferences.quotaMode = .remaining
+        let remainingTrackSource = StatusItemSourceSnapshot(
+            runtime: .codex,
+            status: .available,
+            fiveHourRemainingPercent: nil,
+            fiveHourResetsAt: nil,
+            sevenDayRemainingPercent: 58,
+            sevenDayResetsAt: now.addingTimeInterval(5 * 24 * 60 * 60),
+            monthlyRemainingPercent: nil,
+            monthlyResetsAt: nil,
+            todayTokens: nil
+        )
+        let remainingTrackPresentation = builder.build(
+            source: remainingTrackSource,
+            preferences: remainingTrackPreferences,
+            language: .zh,
+            now: now
+        )
+        let remainingTrackImage = renderer.render(
+            remainingTrackPresentation,
+            tokens: lightTokens,
+            appearance: NSAppearance(named: .aqua)
+        )
+        if let bitmap = remainingTrackImage.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)) {
+            let scaleX = CGFloat(bitmap.pixelsWide) / remainingTrackImage.size.width
+            let scaleY = CGFloat(bitmap.pixelsHigh) / remainingTrackImage.size.height
+            let bar = StatusItemLayoutMetrics.richSingleQuotaBarRect
+            let fillPixel = bitmap.colorAt(
+                x: Int((bar.minX + 4) * scaleX),
+                y: Int(bar.midY * scaleY)
+            )
+            let trackPixel = bitmap.colorAt(
+                x: Int((bar.maxX - 4) * scaleX),
+                y: Int(bar.midY * scaleY)
+            )
+            expect(
+                (trackPixel?.alphaComponent ?? 0) >= 0.20,
+                "remaining-mode single-quota bar should keep a visible colored base track on the right"
+            )
+            expect(
+                (fillPixel?.alphaComponent ?? 0) > (trackPixel?.alphaComponent ?? 0) + 0.35,
+                "58% remaining should fill the leading side above the visible track"
+            )
+        } else {
+            failures.append("remaining-mode track render should produce a readable bitmap")
         }
 
         func resetInkBounds(in image: NSImage) -> NSRect? {

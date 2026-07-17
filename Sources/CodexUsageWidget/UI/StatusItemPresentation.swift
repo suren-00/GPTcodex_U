@@ -107,19 +107,19 @@ enum StatusItemLayoutMetrics {
     static let leadingContentWidth: CGFloat = 22
     static let classicQuotaUnitWidth: CGFloat = 23
     static let classicTokenUnitWidth: CGFloat = 54
-    static let richQuotaWidthWithReset: CGFloat = 126
-    static let richQuotaWidthWithoutReset: CGFloat = 98
+    static let richQuotaWidthWithReset: CGFloat = 141
+    static let richQuotaWidthWithoutReset: CGFloat = 109
     static let richTokenOnlyWidth: CGFloat = 70
     static let richTokenExtensionWidth: CGFloat = 54
-    static let richSingleQuotaBarRect = NSRect(x: 45, y: 4.5, width: 49, height: 13)
-    static let richSingleQuotaResetRect = NSRect(x: 96, y: 4.5, width: 28, height: 13)
+    static let richSingleQuotaBarRect = NSRect(x: 45, y: 4.5, width: 60, height: 13)
+    static let richSingleQuotaResetRect = NSRect(x: 108, y: 4.5, width: 31, height: 13)
     static let richResetIconSide: CGFloat = 7
     static let richResetIconTextSpacing: CGFloat = 0.75
-    static let richResetFontSize: CGFloat = 8.2
+    static let richResetFontSize: CGFloat = 9.2
     static let todayTokenFontSize: CGFloat = NSFont.systemFontSize
 
     static func richResetContentWidth(for text: String) -> CGFloat {
-        let font = NSFont.monospacedDigitSystemFont(ofSize: richResetFontSize, weight: .medium)
+        let font = NSFont.monospacedDigitSystemFont(ofSize: richResetFontSize, weight: .semibold)
         let textWidth = ceil((text as NSString).size(withAttributes: [.font: font]).width)
         return richResetIconSide + richResetIconTextSpacing + textWidth
     }
@@ -238,7 +238,7 @@ struct StatusItemPresentationBuilder {
             itemLength: imageWidth + StatusItemLayoutMetrics.itemOuterPadding,
             showsNoActiveQuota: showsNoActiveQuota,
             metrics: metrics,
-            tooltip: "codexU · \(description) · \(action)",
+            tooltip: "\(AppBrand.displayName) · \(description) · \(action)",
             accessibilityValue: description
         )
     }

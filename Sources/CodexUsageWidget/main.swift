@@ -3,6 +3,10 @@ import Carbon.HIToolbox
 import Combine
 import SwiftUI
 
+enum AppBrand {
+    static let displayName = "GPTcodex_U"
+}
+
 struct RateWindow: Equatable {
     let usedPercent: Double
     let windowDurationMins: Int?
@@ -76,6 +80,7 @@ struct DailyTokenBucket: Identifiable, Equatable {
 }
 
 enum UsageSourceQuality: String, Equatable, Codable {
+    case official
     case detailed
     case approximate
 }
@@ -358,7 +363,7 @@ struct UsageSnapshot: Equatable {
         cloudLifetimeTokens: nil,
         local: nil,
         taskBoard: nil,
-        messages: ["正在读取 codexU 数据"]
+        messages: ["正在读取 GPTcodex_U 数据"]
     )
 
     func replacingTaskBoard(_ taskBoard: TaskBoard?) -> UsageSnapshot {
@@ -900,7 +905,7 @@ final class UsageStore: ObservableObject {
                 kind: .update,
                 runtimeScope: nil,
                 threadID: nil,
-                title: updateResult.latestVersionLabel ?? "codexU",
+                title: updateResult.latestVersionLabel ?? AppBrand.displayName,
                 since: updateResult.checkedAt
             ))
         }
@@ -1131,7 +1136,7 @@ final class UsageStore: ObservableObject {
 
 final class CodexUsageReader {
     private let fileManager = FileManager.default
-    private let localAnalyticsCacheVersion = 9
+    private let localAnalyticsCacheVersion = 10
     private let sessionUsageCacheVersion = 6
     private static let memorySessionUsageCacheLimit = 64
     private static let persistentSessionUsageCacheLimit = 1_024
@@ -1147,7 +1152,9 @@ final class CodexUsageReader {
     func load(context: RuntimeLoadContext) -> UsageSnapshot {
         var messages: [String] = []
         let appServer = readAppServer(messages: &messages)
-        let local = readLocalUsage(context: context, messages: &messages)
+        let local = readLocalUsage(context: context, messages: &messages).map {
+            applyingOfficialUsage(appServer.officialUsage, to: $0, context: context)
+        }
         let taskBoard = readTaskBoard(context: context, messages: &messages)
 
         return UsageSnapshot(
@@ -1183,6 +1190,7 @@ final class CodexUsageReader {
         var rateLimitDiagnostics: [String] = []
         var credits: CreditsInfo?
         var cloudLifetimeTokens: Int64?
+        var officialUsage: CodexOfficialUsageSnapshot?
     }
 
     private func readAppServer(messages: inout [String]) -> AppServerSnapshot {
@@ -1287,7 +1295,8 @@ final class CodexUsageReader {
             case 3:
                 parseRateLimits(result, into: &snapshot)
             case 4:
-                snapshot.cloudLifetimeTokens = parseCloudLifetimeTokens(result)
+                snapshot.officialUsage = CodexOfficialUsageNormalizer.parse(result)
+                snapshot.cloudLifetimeTokens = snapshot.officialUsage?.lifetimeTokens
             default:
                 break
             }
@@ -1354,7 +1363,7 @@ final class CodexUsageReader {
             "params": [
                 "clientInfo": [
                     "name": "codexu",
-                    "title": "codexU",
+                    "title": AppBrand.displayName,
                     "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.1"
                 ],
                 "capabilities": [
@@ -1547,11 +1556,6 @@ final class CodexUsageReader {
         return messages
     }
 
-    private func parseCloudLifetimeTokens(_ result: [String: Any]) -> Int64? {
-        guard let summary = result["summary"] as? [String: Any] else { return nil }
-        return int64Value(summary["lifetimeTokens"])
-    }
-
     private func readLocalUsage(context: RuntimeLoadContext, messages: inout [String]) -> LocalUsage? {
         guard let dbPath = firstExistingPath([
             NSHomeDirectory() + "/.codex/state_5.sqlite",
@@ -1590,12 +1594,14 @@ final class CodexUsageReader {
           COALESCE(SUM(CASE WHEN updated_at >= \(Int(sevenDayStart.timeIntervalSince1970)) THEN tokens_used ELSE 0 END), 0) AS sevenDayTokens,
           COUNT(*) AS threadCount,
           COALESCE(MAX(updated_at), 0) AS lastUpdatedAt
-        FROM threads;
+        FROM threads
+        WHERE COALESCE(thread_source, '') <> 'subagent';
         """
 
         let recentQuery = """
         SELECT id, title, tokens_used AS tokens, updated_at AS updatedAt, model, cwd, archived
         FROM threads
+        WHERE COALESCE(thread_source, '') <> 'subagent'
         ORDER BY updated_at DESC
         LIMIT 5;
         """
@@ -1604,6 +1610,7 @@ final class CodexUsageReader {
         SELECT updated_at AS updatedAt, tokens_used AS tokens
         FROM threads
         WHERE updated_at >= \(Int(sevenDayStart.timeIntervalSince1970))
+          AND COALESCE(thread_source, '') <> 'subagent'
         ORDER BY updated_at ASC;
         """
 
@@ -1691,6 +1698,92 @@ final class CodexUsageReader {
         )
     }
 
+    private func applyingOfficialUsage(
+        _ official: CodexOfficialUsageSnapshot?,
+        to local: LocalUsage,
+        context: RuntimeLoadContext
+    ) -> LocalUsage {
+        guard let official else { return local }
+
+        let calendar = context.statistics.calendar
+        let dayStart = calendar.startOfDay(for: context.now)
+        let sevenDayStart = calendar.date(byAdding: .day, value: -6, to: dayStart) ?? dayStart
+        let trendStart = calendar.date(byAdding: .day, value: -190, to: dayStart) ?? sevenDayStart
+        var monthComponents = calendar.dateComponents([.year, .month], from: dayStart)
+        monthComponents.day = 1
+        monthComponents.hour = 0
+        monthComponents.minute = 0
+        monthComponents.second = 0
+        let monthStart = calendar.date(from: monthComponents) ?? dayStart
+
+        let todayKey = context.statistics.dayKey(for: dayStart)
+        let sevenDayKeys = (0..<7).compactMap { offset in
+            calendar.date(byAdding: .day, value: offset - 6, to: dayStart)
+                .map { context.statistics.dayKey(for: $0) }
+        }
+        let monthPrefix = String(todayKey.prefix(7)) + "-"
+        let localDetailed = local.detailedUsage
+        let officialHasToday = official.dailyTokens[todayKey] != nil
+        let todayUsage = officialHasToday
+            ? CodexOfficialUsageNormalizer.align(localDetailed?.today, to: official.tokens(on: todayKey))
+            : (localDetailed?.today ?? .zero)
+        let todayTokens = todayUsage.tokens.visibleTotalTokens
+
+        var combinedDailyUsage = official.dailyTokens.reduce(into: [String: PricedTokenUsage]()) { result, entry in
+            let localDay = local.usageTrend?.dayBuckets.first { $0.id == entry.key }?.usage
+            result[entry.key] = CodexOfficialUsageNormalizer.align(localDay, to: entry.value)
+        }
+        if !officialHasToday, localDetailed != nil {
+            combinedDailyUsage[todayKey] = todayUsage
+        }
+        let sevenDayTokens = sevenDayKeys.reduce(Int64(0)) {
+            $0 + (combinedDailyUsage[$1]?.tokens.visibleTotalTokens ?? 0)
+        }
+        let monthTokens = combinedDailyUsage.reduce(Int64(0)) { partial, entry in
+            partial + (entry.key.hasPrefix(monthPrefix) ? entry.value.tokens.visibleTotalTokens : 0)
+        }
+
+        let detailed = DetailedUsage(
+            today: todayUsage,
+            sevenDay: CodexOfficialUsageNormalizer.align(localDetailed?.sevenDay, to: sevenDayTokens),
+            month: CodexOfficialUsageNormalizer.align(localDetailed?.month, to: monthTokens),
+            lifetime: CodexOfficialUsageNormalizer.align(localDetailed?.lifetime, to: official.lifetimeTokens),
+            parsedFileCount: localDetailed?.parsedFileCount ?? 0,
+            tokenEventCount: localDetailed?.tokenEventCount ?? 0
+        )
+
+        let usageTrend = makeUsageTrend(
+            dailyUsage: combinedDailyUsage,
+            dayStart: dayStart,
+            sevenDayStart: sevenDayStart,
+            trendStart: trendStart,
+            monthStart: monthStart,
+            sourceQuality: .official,
+            calendar: calendar
+        )
+
+        return LocalUsage(
+            lifetimeTokens: official.lifetimeTokens,
+            todayTokens: todayTokens,
+            sevenDayTokens: sevenDayTokens,
+            threadCount: local.threadCount,
+            lastUpdatedAt: local.lastUpdatedAt,
+            dailyBuckets: local.dailyBuckets.map { bucket in
+                DailyTokenBucket(
+                    id: bucket.id,
+                    label: bucket.label,
+                    tokens: combinedDailyUsage[bucket.id]?.tokens.visibleTotalTokens ?? 0
+                )
+            },
+            recentThreads: local.recentThreads,
+            detailedUsage: detailed,
+            usageTrend: usageTrend,
+            projectBoard: local.projectBoard,
+            toolUsages: local.toolUsages,
+            skillUsages: local.skillUsages
+        )
+    }
+
     private func validatedLocalAnalytics(
         _ analytics: LocalAnalytics,
         approximateTodayTokens: Int64,
@@ -1744,6 +1837,7 @@ final class CodexUsageReader {
         WHERE rollout_path IS NOT NULL
           AND rollout_path <> ''
           AND tokens_used > 0
+          AND COALESCE(thread_source, '') <> 'subagent'
         ORDER BY updated_at ASC;
         """
 
@@ -1928,7 +2022,8 @@ final class CodexUsageReader {
                 sevenDayStart: sevenDayStart,
                 trendStart: trendStart,
                 monthStart: monthStart,
-                sourceQuality: .detailed
+                sourceQuality: .detailed,
+                calendar: calendar
             ),
             recentProjects: recentProjectUsage.values
                 .map { $0.makeUsage() }
@@ -1956,9 +2051,9 @@ final class CodexUsageReader {
         sevenDayStart: Date,
         trendStart: Date,
         monthStart: Date,
-        sourceQuality: UsageSourceQuality
+        sourceQuality: UsageSourceQuality,
+        calendar: Calendar
     ) -> UsageTrend {
-        let calendar = Calendar.current
         var buckets: [UsageDayBucket] = []
         var cursor = calendar.startOfDay(for: trendStart)
         let end = calendar.startOfDay(for: dayStart)
@@ -2005,8 +2100,8 @@ final class CodexUsageReader {
             isNewActivity = sevenDay.tokens.visibleTotalTokens > 0
         }
 
-        let dayOfMonth = max(calendar.component(.day, from: Date()), 1)
-        let daysInMonth = calendar.range(of: .day, in: .month, for: Date())?.count ?? dayOfMonth
+        let dayOfMonth = max(calendar.component(.day, from: dayStart), 1)
+        let daysInMonth = calendar.range(of: .day, in: .month, for: dayStart)?.count ?? dayOfMonth
         let projectedMonthCostUSD: Double?
         if dayOfMonth >= 2, month.estimatedCostUSD > 0 {
             projectedMonthCostUSD = month.estimatedCostUSD / Double(dayOfMonth) * Double(daysInMonth)
@@ -2120,6 +2215,7 @@ final class CodexUsageReader {
         SELECT updated_at AS updatedAt, tokens_used AS tokens
         FROM threads
         WHERE updated_at >= \(Int(trendStart.timeIntervalSince1970))
+          AND COALESCE(thread_source, '') <> 'subagent'
         ORDER BY updated_at ASC;
         """
 
@@ -2151,7 +2247,8 @@ final class CodexUsageReader {
             sevenDayStart: sevenDayStart,
             trendStart: trendStart,
             monthStart: monthStart,
-            sourceQuality: .approximate
+            sourceQuality: .approximate,
+            calendar: calendar
         )
     }
 
@@ -2160,6 +2257,7 @@ final class CodexUsageReader {
         SELECT cwd, COUNT(*) AS threadCount, COALESCE(SUM(tokens_used), 0) AS tokens, MAX(CASE WHEN recency_at > 0 THEN recency_at ELSE updated_at END) AS lastActiveAt
         FROM threads
         WHERE tokens_used > 0
+          AND COALESCE(thread_source, '') <> 'subagent'
         GROUP BY cwd
         ORDER BY tokens DESC
         LIMIT 24;
@@ -2190,6 +2288,7 @@ final class CodexUsageReader {
         FROM threads
         WHERE tokens_used > 0
           AND updated_at >= \(Int(sevenDayStart.timeIntervalSince1970))
+          AND COALESCE(thread_source, '') <> 'subagent'
         GROUP BY cwd
         ORDER BY tokens DESC
         LIMIT 24;
@@ -3977,7 +4076,15 @@ struct UsageWidgetView: View {
             return taskBoardSummary
         case .usage:
             guard let trend = snapshot.local?.usageTrend else { return language.text("读取中", "Loading") }
-            let quality = trend.sourceQuality == .approximate ? language.text("粗略统计", "Approx.") : language.text("精细统计", "Detailed")
+            let quality: String
+            switch trend.sourceQuality {
+            case .official:
+                quality = language.text("官方统计", "Official")
+            case .detailed:
+                quality = language.text("精细统计", "Detailed")
+            case .approximate:
+                quality = language.text("粗略统计", "Approx.")
+            }
             return language.text("\(trend.activeDayCount) 活跃日 · \(quality)", "\(trend.activeDayCount) active days · \(quality)")
         case .projects:
             let activeCount = snapshot.local?.projectBoard?.recentProjects.count ?? 0
@@ -4000,7 +4107,7 @@ struct UsageWidgetView: View {
     }
 
     private var shouldShowEnvironmentChecklist: Bool {
-        if snapshot.messages.contains("正在读取 codexU 数据") { return false }
+        if snapshot.messages.contains("正在读取 GPTcodex_U 数据") { return false }
         let quotaUnavailable = snapshot.fiveHourQuota == nil
             && snapshot.sevenDayQuota == nil
             && snapshot.monthlyQuota == nil
@@ -4618,7 +4725,7 @@ struct SettingsPanelView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(language.text("设置", "Settings"))
                     .font(.system(size: 18, weight: .semibold, design: .rounded))
-                Text("codexU")
+                Text(AppBrand.displayName)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
             }
@@ -7055,7 +7162,7 @@ struct WoolProgressCard: View {
                 Text(formatUSD(usage?.estimatedCostUSD))
                     .font(.system(size: 16, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                Text("/ \(formatCompactUSD(maxValue))")
+                Text("/ \(formatUSD(maxValue))")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
@@ -7080,7 +7187,7 @@ struct WoolProgressCard: View {
                     }
                 }
                 Spacer(minLength: 4)
-                Text("\(language.text("满额", "Cap")) \(formatCompactUSD(maxValue))")
+                Text("\(language.text("满额", "Cap")) \(formatUSD(maxValue))")
                     .font(.system(size: 8.5, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -9123,6 +9230,8 @@ private func heatmapColor(level: Int, tokens: ResolvedVisualTokens) -> Color {
 
 private func sourceQualityText(_ quality: UsageSourceQuality, language: WidgetLanguage) -> String {
     switch quality {
+    case .official:
+        return language.text("官方", "Official")
     case .detailed:
         return language.text("精细", "Detailed")
     case .approximate:
@@ -9132,6 +9241,8 @@ private func sourceQualityText(_ quality: UsageSourceQuality, language: WidgetLa
 
 private func sourceQualityDetailText(_ quality: UsageSourceQuality, language: WidgetLanguage) -> String {
     switch quality {
+    case .official:
+        return language.text("官方账户", "Official account")
     case .detailed:
         return language.text("事件口径", "Event source")
     case .approximate:
@@ -9141,6 +9252,8 @@ private func sourceQualityDetailText(_ quality: UsageSourceQuality, language: Wi
 
 private func usageSourceTooltip(_ quality: UsageSourceQuality, language: WidgetLanguage) -> String {
     switch quality {
+    case .official:
+        return language.text("Codex 官方数据；当天未发布时使用本机实时事件", "Official Codex data; live local events until today is published")
     case .detailed:
         return language.text("来自 token_count", "From token_count")
     case .approximate:
@@ -9150,8 +9263,8 @@ private func usageSourceTooltip(_ quality: UsageSourceQuality, language: WidgetL
 
 private func usageSourceHelp(language: WidgetLanguage) -> String {
     language.text(
-        "使用本机 Codex session token_count 事件估算；缺失时回退到本机线程更新时间统计。API 等效价值为估算，不代表官方账单。",
-        "Estimated from local Codex session token_count events. Falls back to thread updated_at when detailed events are unavailable. API-equivalent value is an estimate, not an official bill."
+        "Token 总量与历史每日趋势来自 Codex 官方账户统计；官方当天数据未发布时使用本机 session 事件实时补齐。未缓存、缓存、输出及 API 等效价值为估算，不代表官方账单。",
+        "Token totals and historical daily trends come from official Codex account usage. Local session events provide a live value until today's official bucket is published. Token splits and API-equivalent values are estimates, not an official bill."
     )
 }
 
@@ -9201,21 +9314,6 @@ private func formatUSD(_ value: Double?) -> String {
         return String(format: "$%.0f", value)
     }
     return String(format: "$%.2f", value)
-}
-
-private func formatCompactUSD(_ value: Double?) -> String {
-    guard let value else { return "--" }
-    let absValue = abs(value)
-    if absValue >= 1_000_000 {
-        return String(format: "$%.1fM", value / 1_000_000)
-    }
-    if absValue >= 10_000 {
-        return String(format: "$%.1fK", value / 1_000)
-    }
-    if absValue >= 1_000 {
-        return String(format: "$%.0f", value)
-    }
-    return String(format: "$%.0f", value)
 }
 
 private func formatUSDPerMillion(_ value: Double) -> String {
@@ -9541,7 +9639,7 @@ private func localizedTaskTime(_ item: TaskItem, language: WidgetLanguage) -> St
 
 private func localizedReaderMessage(_ message: String, language: WidgetLanguage) -> String {
     guard !language.isChinese else { return message }
-    if message == "正在读取 codexU 数据" { return "Reading codexU data" }
+    if message == "正在读取 GPTcodex_U 数据" { return "Reading GPTcodex_U data" }
     if message.contains("未找到 codex") { return "Codex executable not found" }
     if message.contains("app-server 启动失败") { return "Failed to start app-server" }
     if message.contains("app-server 响应超时") { return "app-server response timed out" }
@@ -9907,7 +10005,7 @@ final class MainAppWindow: NSWindow {
             backing: .buffered,
             defer: false
         )
-        title = "codexU"
+        title = AppBrand.displayName
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
         isReleasedWhenClosed = false
@@ -10156,10 +10254,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
 
-        let appMenu = NSMenu(title: "codexU")
+        let appMenu = NSMenu(title: AppBrand.displayName)
         appMenuItem.submenu = appMenu
         appMenu.addItem(NSMenuItem(
-            title: language.text("关于 codexU", "About codexU"),
+            title: language.text("关于 GPTcodex_U", "About GPTcodex_U"),
             action: #selector(showAboutPanel),
             keyEquivalent: ""
         ))
@@ -10172,7 +10270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         appMenu.addItem(.separator())
 
         let hideItem = NSMenuItem(
-            title: language.text("隐藏 codexU", "Hide codexU"),
+            title: language.text("隐藏 GPTcodex_U", "Hide GPTcodex_U"),
             action: #selector(NSApplication.hide(_:)),
             keyEquivalent: "h"
         )
@@ -10197,7 +10295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         appMenu.addItem(showAllItem)
         appMenu.addItem(.separator())
         appMenu.addItem(NSMenuItem(
-            title: language.text("退出 codexU", "Quit codexU"),
+            title: language.text("退出 GPTcodex_U", "Quit GPTcodex_U"),
             action: #selector(quitFromMenu),
             keyEquivalent: "q"
         ))
@@ -10625,7 +10723,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             appearance: appearance
         )
         button.toolTip = presentation.tooltip
-        button.setAccessibilityLabel("codexU")
+        button.setAccessibilityLabel(AppBrand.displayName)
         button.setAccessibilityValue(presentation.accessibilityValue)
         PerformanceMonitor.shared.end(performanceSpan)
     }
@@ -10819,7 +10917,9 @@ struct codexUMain {
         }
 
         if CommandLine.arguments.contains("--self-test-token-counter") {
-            exit(CodexTokenCounterNormalizerSelfTest.run() ? 0 : 1)
+            let counterPassed = CodexTokenCounterNormalizerSelfTest.run()
+            let officialPassed = CodexOfficialUsageSelfTest.run()
+            exit(counterPassed && officialPassed ? 0 : 1)
         }
 
         if CommandLine.arguments.contains("--self-test-app-server-pipe") {

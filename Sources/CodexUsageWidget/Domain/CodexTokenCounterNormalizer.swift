@@ -177,6 +177,27 @@ enum CodexTokenCounterNormalizerSelfTest {
         expect(recoveredAuxiliary?.cachedInputTokens == 5, "auxiliary recovery should count only growth above its high-water mark")
         expect(recoveredAuxiliary?.totalTokens == 13, "normal growth should prefer matching last_token_usage")
 
+        var recoveryState = CodexTokenCounterState()
+        _ = CodexTokenCounterNormalizer.consume(
+            cumulative: sample(input: 3_500_000, cached: 3_000_000, output: 500_000, total: 4_000_000),
+            lastUsage: sample(input: 90_000, cached: 80_000, output: 10_000, total: 100_000),
+            state: &recoveryState
+        )
+        _ = CodexTokenCounterNormalizer.consume(
+            cumulative: sample(input: 3_600_000, cached: 3_100_000, output: 510_000, total: 2_500_000),
+            lastUsage: sample(input: 72_000, cached: 64_000, output: 8_000, total: 80_000),
+            state: &recoveryState
+        )
+        let highWaterRecovery = CodexTokenCounterNormalizer.consume(
+            cumulative: sample(input: 3_700_000, cached: 3_200_000, output: 520_000, total: 4_200_000),
+            lastUsage: sample(input: 90_000, cached: 80_000, output: 10_000, total: 100_000),
+            state: &recoveryState
+        )
+        expect(
+            highWaterRecovery?.totalTokens == 100_000,
+            "cumulative recovery above a high-water mark must not replace the event-level last_token_usage"
+        )
+
         let reset = CodexTokenCounterNormalizer.consume(
             cumulative: sample(input: 80, cached: 40, output: 20, reasoning: 5, total: 100),
             lastUsage: sample(input: 8, cached: 4, output: 2, reasoning: 1, total: 10),

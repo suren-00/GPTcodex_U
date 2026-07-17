@@ -1,9 +1,9 @@
-# codexU
+# GPTcodex_U
 
 > [!IMPORTANT]
 > **Upgrade to v1.1.4 or later.** v1.1.4 fixes app-server pipe reads that waited for a full 64 KiB buffer and caused Codex account and quota requests to time out. Quota and task streams now use bounded POSIX partial reads while retaining buffer, timeout, and process-cleanup limits. [Download the latest release](https://github.com/shanggqm/codexU/releases/latest).
 
-codexU is a macOS menu bar and desktop app for tracking OpenAI Codex / ChatGPT Codex and Claude Code quota, token usage, and today's task status. It keeps the information you check most in the menu bar and main window, so you can quickly see remaining quota, reset times, and daily work progress.
+GPTcodex_U (formerly codexU) is a macOS menu bar and desktop app for tracking OpenAI Codex / ChatGPT Codex and Claude Code quota, token usage, and today's task status. It keeps the information you check most in the menu bar and main window, so you can quickly see remaining quota, reset times, and daily work progress.
 
 ![codexU v1.1.0 palette gallery, settings, and main window](docs/screenshot-v1.1.0-palette-gallery.png)
 
@@ -23,13 +23,13 @@ codexU is a macOS menu bar and desktop app for tracking OpenAI Codex / ChatGPT C
 - Offers transparent Minimal, Classic, and Rich menu bar modes: Minimal keeps thicker quota rings, Classic keeps the quota number inside each progress ring, and Rich keeps full labels, bars, and reset times. A single active window automatically collapses to a single-quota layout.
 - Preserves the full ring particle effect while rendering it only when the main window is visible, frontmost, and focused by default. Power Saving mode renders particles only while the ring is hovered, and animation stops in the background or under Low Power, thermal, and Reduce Motion constraints.
 - Lets you switch menu bar quotas between used and remaining, choose 5-hour, 7-day or monthly, today tokens, and reset countdown, and keeps 5h/7d/mo progress colors aligned with the main blue-purple quota rings. Team monthly windows (for example 43800 minutes) are classified and shown correctly instead of being treated as unknown.
-- Uses progress direction instead of extra labels: used runs clockwise/left-to-right, while remaining runs counterclockwise/right-to-left.
+- Uses ring direction instead of extra labels: used runs clockwise and remaining runs counterclockwise; linear bars consistently fill left-to-right for easier scanning.
 - Uses monochrome templates derived exactly from the original Runtime logos and resolves icon/text colors from the menu bar's effective appearance; branded color icons remain in the main window and popover.
 - Shows today's total tokens as one vertically centered number in the menu bar, without an extra `T` label.
 - Uses the system menu bar body size for today's total and a higher-contrast supporting foreground for 5h/7d labels and reset times while preserving hierarchy beneath primary values.
 - Adds a top-level `Codex | Claude Code` switch in the main widget so all panels can switch runtime scope manually.
 - Supports Claude Code local transcript usage, 7-day trends, project rankings, top tools/Skills, and a basic task board.
-- Summarizes token usage for today, the last 7 days, and lifetime totals with uncached input, cached input, and output splits.
+- Summarizes token usage for today, the last 7 days, and lifetime totals with uncached input, cached input, and output splits; token values use the Chinese 万/亿 scale and API-equivalent dollar values remain unabridged numbers.
 - Estimates the current month's API-equivalent value from OpenAI API token prices and shows progress against Plus, Pro 100, Pro 200, and the full monthly quota value. The bar uses a segmented nonlinear scale, so movement past Pro 200 remains visible and is not a linear dollar ratio.
 - Adds lower dashboard tabs for today's tasks, usage trend, project ranking, and Skill usage.
 - Organizes today's tasks according to each factual source: Codex uses Recent, To continue, Scheduled, and Archived today; Claude Code uses explicit local task states for Active, Pending, Planned, and Completed. Recent activity and archival are not presented as proof of running or success.
@@ -146,7 +146,7 @@ For Developer ID signing and notarization, see [DISTRIBUTION.md](DISTRIBUTION.md
 - Local token totals: `~/.codex/state_5.sqlite`.
 - Detailed token splits: `token_count` events in `~/.codex/sessions/**/rollout-*.jsonl` and `~/.codex/archived_sessions/*.jsonl`.
 - Today's board: unarchived and archived Codex threads in the local SQLite database. The two-hour activity window means only “recent,” while archival does not imply running or success.
-- Usage trends and project rankings: aggregated from local session `token_count` events, with an approximate thread-updated-time fallback when detailed events are unavailable.
+- Token totals and historical daily trends come from official Codex account usage. Until today's official bucket is published, local session `token_count` events provide the live today value. Uncached/cached/output and cost splits are local estimates. Project rankings fall back to thread-updated-time data when detailed events are unavailable and exclude subagent duplicates.
 - Tool and Skill usage: tool call and Skill load records parsed from local session events.
 - Scheduled tasks: enabled automation metadata under `~/.codex/automations/**/automation.toml`. The next run is computed locally only when cadence, timezone, and time are sufficiently explicit.
 - Claude Code historical tokens: assistant `message.usage` fields in `~/.claude/projects/**/*.jsonl`.

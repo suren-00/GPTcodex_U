@@ -77,7 +77,9 @@ struct CodexRuntimeProvider: RuntimeUsageProvider {
             snapshot: snapshot,
             status: status,
             quotaSourceLabel: "Codex app-server + local records",
-            usageSourceLabel: "Codex local state"
+            usageSourceLabel: snapshot.cloudLifetimeTokens == nil
+                ? "Codex local state"
+                : "Codex official account usage + live local today + local split estimates"
         )
     }
 

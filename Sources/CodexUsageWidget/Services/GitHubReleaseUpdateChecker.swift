@@ -9,8 +9,8 @@ final class GitHubReleaseUpdateChecker {
     private let cacheSchemaVersion = 1
 
     init(
-        owner: String = "shanggqm",
-        repo: String = "codexU",
+        owner: String = "suren-00",
+        repo: String = "GPTcodex_U",
         cacheDirectory: URL = RuntimeLoadContext.live().cacheDirectory,
         session: URLSession = .shared,
         minimumAutomaticCheckInterval: TimeInterval = 24 * 60 * 60,

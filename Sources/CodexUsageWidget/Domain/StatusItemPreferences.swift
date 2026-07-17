@@ -15,7 +15,7 @@ enum QuotaDisplayMode: String, CaseIterable, Codable, Identifiable, Equatable {
     var id: String { rawValue }
 
     var drawsClockwise: Bool { self == .used }
-    var startsAtLeadingEdge: Bool { self == .used }
+    var startsAtLeadingEdge: Bool { true }
 }
 
 enum StatusItemMetric: String, CaseIterable, Codable, Identifiable, Hashable {
