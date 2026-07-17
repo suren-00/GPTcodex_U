@@ -1,23 +1,11 @@
 # GPTcodex_U
 
 > [!IMPORTANT]
-> **当前定制版为 v1.2.0。** 此版本统一使用 Codex 官方账户用量口径，补充当天实时估算，优化菜单栏额度进度条与中文数量单位，并启用全新的 `GPTcodex_U` 图标和名称。[下载最新版本](https://github.com/suren-00/GPTcodex_U/releases/latest)。
+> **当前版本为 v1.2.1。** 此版本修复官方当天数据延迟时覆盖本机实时统计的问题；历史数据保持官方口径，当天数据会使用官方与本机实时统计中更完整的值。[下载最新版本](https://github.com/suren-00/GPTcodex_U/releases/latest)。
 
-[下载最新版本](https://github.com/suren-00/GPTcodex_U/releases/latest) · [上游项目](https://github.com/shanggqm/codexU) · [English](README.en.md)
+[下载最新版本](https://github.com/suren-00/GPTcodex_U/releases/latest) · [English](README.en.md)
 
-GPTcodex_U（原 codexU）是一个 macOS 菜单栏与桌面应用，用来查看 OpenAI Codex / ChatGPT Codex 和 Claude Code 的额度窗口、token 用量和今日任务状态。它把常用信息放在菜单栏和主窗口里，帮助你快速判断剩余额度、重置时间和当天工作进展。
-
-## 界面截图
-
-![codexU v1.1.0 配色图库、设置与主界面](docs/screenshot-v1.1.0-palette-gallery.png)
-
-![codexU 今日任务视图](docs/screenshot-v0.3.0-today.png)
-
-![codexU 用量趋势视图](docs/screenshot-v0.3.0-usage.png)
-
-![codexU 项目排行视图](docs/screenshot-v0.3.0-projects.png)
-
-![codexU Skill 使用视图](docs/screenshot-v0.3.0-skills.png)
+GPTcodex_U 是一个 macOS 菜单栏与桌面应用，用来查看 OpenAI Codex / ChatGPT Codex 和 Claude Code 的额度窗口、token 用量和今日任务状态。它把常用信息放在菜单栏和主窗口里，帮助你快速判断剩余额度、重置时间和当天工作进展。
 
 ## 适合谁
 
@@ -159,10 +147,10 @@ make release-all
 产物会写入 `dist/`，例如：
 
 ```text
-dist/GPTcodex_U-1.2.0-mac-arm64.dmg
-dist/GPTcodex_U-1.2.0-mac-arm64.dmg.sha256
-dist/GPTcodex_U-1.2.0-mac-x86_64.dmg
-dist/GPTcodex_U-1.2.0-mac-x86_64.dmg.sha256
+dist/GPTcodex_U-1.2.1-mac-arm64.dmg
+dist/GPTcodex_U-1.2.1-mac-arm64.dmg.sha256
+dist/GPTcodex_U-1.2.1-mac-x86_64.dmg
+dist/GPTcodex_U-1.2.1-mac-x86_64.dmg.sha256
 ```
 
 Developer ID 签名和 Apple notarization 流程见 [DISTRIBUTION.md](DISTRIBUTION.md)。
@@ -204,15 +192,3 @@ Developer ID 签名和 Apple notarization 流程见 [DISTRIBUTION.md](DISTRIBUTI
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-## 关注公众号
-
-如果你关注 AI 工具、Codex 使用经验和独立产品构建，欢迎扫码关注我的公众号。
-
-<img src="docs/wechat-official-account-qr.png" alt="公众号二维码" width="220" />
-
-## 用户交流群
-
-扫码加入 codexU 用户交流群，交流使用经验、反馈问题，也欢迎一起参与开源共建。
-
-<img src="docs/codexu-community-qr.jpg" alt="codexU 用户交流群二维码" width="320" />

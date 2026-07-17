@@ -1,11 +1,9 @@
 # GPTcodex_U
 
 > [!IMPORTANT]
-> **The current customized release is v1.2.0.** It aligns usage totals with Codex's official account data, adds a live estimate for today, improves menu-bar quota visibility and Chinese-scale token formatting, and ships the new `GPTcodex_U` name and icons. [Download the latest release](https://github.com/suren-00/GPTcodex_U/releases/latest).
+> **The current release is v1.2.1.** It fixes delayed official current-day data hiding newer local live usage. Historical totals remain official, while today uses the more complete value available from official and local token events. [Download the latest release](https://github.com/suren-00/GPTcodex_U/releases/latest).
 
-GPTcodex_U (formerly codexU) is a macOS menu bar and desktop app for tracking OpenAI Codex / ChatGPT Codex and Claude Code quota, token usage, and today's task status. It keeps the information you check most in the menu bar and main window, so you can quickly see remaining quota, reset times, and daily work progress.
-
-![codexU v1.1.0 palette gallery, settings, and main window](docs/screenshot-v1.1.0-palette-gallery.png)
+GPTcodex_U is a macOS menu bar and desktop app for tracking OpenAI Codex / ChatGPT Codex and Claude Code quota, token usage, and today's task status. It keeps the information you check most in the menu bar and main window, so you can quickly see remaining quota, reset times, and daily work progress.
 
 ## Who It Is For
 
@@ -132,10 +130,10 @@ make release-all
 Release artifacts are written to `dist/`, for example:
 
 ```text
-dist/GPTcodex_U-1.2.0-mac-arm64.dmg
-dist/GPTcodex_U-1.2.0-mac-arm64.dmg.sha256
-dist/GPTcodex_U-1.2.0-mac-x86_64.dmg
-dist/GPTcodex_U-1.2.0-mac-x86_64.dmg.sha256
+dist/GPTcodex_U-1.2.1-mac-arm64.dmg
+dist/GPTcodex_U-1.2.1-mac-arm64.dmg.sha256
+dist/GPTcodex_U-1.2.1-mac-x86_64.dmg
+dist/GPTcodex_U-1.2.1-mac-x86_64.dmg.sha256
 ```
 
 For Developer ID signing and notarization, see [DISTRIBUTION.md](DISTRIBUTION.md).
@@ -177,15 +175,3 @@ Yes. Intel Macs should use `GPTcodex_U-<version>-mac-x86_64.dmg`. From source, p
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-## WeChat Official Account
-
-Scan the QR code to follow my WeChat official account for AI tools, Codex usage notes, and independent product building.
-
-<img src="docs/wechat-official-account-qr.png" alt="WeChat official account QR code" width="220" />
-
-## User Community
-
-Scan to join the Chinese-language codexU user community for usage tips, issue feedback, and open-source collaboration.
-
-<img src="docs/codexu-community-qr.jpg" alt="codexU user community WeChat QR code" width="320" />

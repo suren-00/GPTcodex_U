@@ -89,6 +89,15 @@ enum CodexOfficialUsageNormalizer {
         )
     }
 
+    /// The account endpoint can publish a current-day bucket before that bucket has caught up.
+    /// Keep official history authoritative, but never let its delayed current-day snapshot hide
+    /// a larger total parsed from local token_count events.
+    static func mergeLiveToday(_ local: PricedTokenUsage?, officialTotal: Int64?) -> PricedTokenUsage {
+        let official = max(officialTotal ?? 0, 0)
+        let localTotal = max(local?.tokens.visibleTotalTokens ?? 0, 0)
+        return align(local, to: max(official, localTotal))
+    }
+
     private static func int64(_ value: Any?) -> Int64? {
         switch value {
         case let value as Int64:
@@ -139,6 +148,11 @@ enum CodexOfficialUsageSelfTest {
         expect(aligned.tokens.visibleTotalTokens == 60, "aligned usage should preserve the official total")
         expect(aligned.tokens.splitTotalTokens == 60, "aligned token splits should add up to the official total")
         expect(aligned.estimatedCostUSD == 6, "aligned estimated cost should preserve the local price ratio")
+
+        let delayedToday = CodexOfficialUsageNormalizer.mergeLiveToday(local, officialTotal: 60)
+        expect(delayedToday.tokens.visibleTotalTokens == 120, "live local today should outrank a delayed official bucket")
+        let newerOfficialToday = CodexOfficialUsageNormalizer.mergeLiveToday(local, officialTotal: 180)
+        expect(newerOfficialToday.tokens.visibleTotalTokens == 180, "a larger official today bucket should remain authoritative")
 
         if failures.isEmpty {
             print("Codex official usage self-test passed")

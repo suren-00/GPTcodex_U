@@ -1724,16 +1724,17 @@ final class CodexUsageReader {
         let monthPrefix = String(todayKey.prefix(7)) + "-"
         let localDetailed = local.detailedUsage
         let officialHasToday = official.dailyTokens[todayKey] != nil
-        let todayUsage = officialHasToday
-            ? CodexOfficialUsageNormalizer.align(localDetailed?.today, to: official.tokens(on: todayKey))
-            : (localDetailed?.today ?? .zero)
+        let todayUsage = CodexOfficialUsageNormalizer.mergeLiveToday(
+            localDetailed?.today,
+            officialTotal: officialHasToday ? official.tokens(on: todayKey) : nil
+        )
         let todayTokens = todayUsage.tokens.visibleTotalTokens
 
         var combinedDailyUsage = official.dailyTokens.reduce(into: [String: PricedTokenUsage]()) { result, entry in
             let localDay = local.usageTrend?.dayBuckets.first { $0.id == entry.key }?.usage
             result[entry.key] = CodexOfficialUsageNormalizer.align(localDay, to: entry.value)
         }
-        if !officialHasToday, localDetailed != nil {
+        if localDetailed != nil {
             combinedDailyUsage[todayKey] = todayUsage
         }
         let sevenDayTokens = sevenDayKeys.reduce(Int64(0)) {
